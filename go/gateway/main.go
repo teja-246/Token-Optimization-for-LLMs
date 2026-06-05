@@ -6,6 +6,9 @@ import (
 
 func main() {
 	router := gin.Default()
-	router.POST("/v1/chat", ChatHandler)
+	router.POST("/v1/chat",
+				AuthMiddleware(),
+				RateLimitMiddleware(),
+				ChatHandler)
 	router.Run(":8000")
 }
