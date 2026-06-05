@@ -9,6 +9,7 @@ func main() {
 	router.POST("/v1/chat",
 				AuthMiddleware(),
 				RateLimitMiddleware(),
+				RequestIDMiddleware(),
 				ChatHandler)
 	router.Run(":8000")
 }

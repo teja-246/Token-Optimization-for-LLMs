@@ -19,9 +19,13 @@ func ChatHandler(c *gin.Context) {
 		return
 	}
 	userID, _ := c.Get("user_id")
+	requestID, _ := c.Get("request_id")
+	traceID, _ := c.Get("trace_id")
 	c.JSON(http.StatusOK, gin.H{
-		"message": "authenticated request",
-		"user_id": userID,
-		"prompt": req.Prompt,
+		"message":    "gateway operational",
+		"user_id":    userID,
+		"request_id": requestID,
+		"trace_id":   traceID,
+		"prompt":     req.Prompt,
 	})
 }
