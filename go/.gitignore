@@ -1,0 +1,21 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Dependency directories
+/vendor/
+/Godeps/
+
+# IDE/editor files
+*.swp
+*~
+.DS_Store
+
+# Build directories
+bin/
+.env/
