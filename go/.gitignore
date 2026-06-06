@@ -18,4 +18,5 @@
 
 # Build directories
 bin/
+.env
 .env/
