@@ -5,7 +5,8 @@ import (
 	"github.com/google/uuid"
 )
 
-func RequestIDMiddleware() gin.HandlerFunc {
+// RequestTracingMiddleware injects request_id and trace_id into context.
+func RequestTracingMiddleware() gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		requestID := "req_" + uuid.New().String()
