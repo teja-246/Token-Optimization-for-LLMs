@@ -10,13 +10,18 @@ import (
 
 type Logger struct {
 	db     *pgxpool.Pool
+	kafka   *KafkaProducer
 	events chan RequestLog
 }
 
-func NewLogger(db *pgxpool.Pool) *Logger {
+func NewLogger(
+	db *pgxpool.Pool,
+	kafka *KafkaProducer,
+) *Logger {
 
 	logger := &Logger{
 		db:     db,
+		kafka:  kafka,
 		events: make(chan RequestLog, 1000),
 	}
 
@@ -51,6 +56,7 @@ func (l *Logger) startWorker() {
 				err,
 			)
 		}
+		l.kafka.Publish(event)
 	}
 }
 func (l *Logger) insertRequestLog(event RequestLog) error {

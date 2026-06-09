@@ -32,12 +32,18 @@ func main() {
 	}
 	rdb := redis.NewClient(opt)
 
+	// ── init Kafka producer ───────────────────────────────────────────────────
+	kafkaProducer, err := analytics.NewKafkaProducer(cfg.KafkaBroker,)
+	if err != nil {
+		log.Fatalf("kafka error: %v", err)
+	}
+
 	// ── init Postgres ──────────────────────────────────────────────────────────
 	dbPool, err := analytics.NewPostgresPool(cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("postgres error: %v", err)
 	}
-	analyticsLogger := analytics.NewLogger(dbPool)
+	analyticsLogger := analytics.NewLogger(dbPool, kafkaProducer)
 
 	// ── init Groq provider (Feature 2) ───────────────────────────────────────
 	groqProvider := providers.NewGroqProvider(cfg.GroqAPIKey)

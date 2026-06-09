@@ -12,6 +12,7 @@ type Config struct {
 	RedisURL    string
 	GroqAPIKey  string
 	PostgresURL string
+	KafkaBroker string
 }
 
 // Load reads configuration from environment variables.
@@ -23,6 +24,7 @@ func Load() (*Config, error) {
 		RedisURL:   getEnv("REDIS_URL", "redis://localhost:6379"),
 		GroqAPIKey: os.Getenv("GROQ_API_KEY"),
 		PostgresURL: os.Getenv("POSTGRES_URL"),
+		KafkaBroker: os.Getenv("KAFKA_BROKER"),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -33,6 +35,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.PostgresURL == "" {
 		return nil, fmt.Errorf("POSTGRES_URL is required")
+	}
+	if cfg.KafkaBroker == "" {
+		return nil, fmt.Errorf("KAFKA_BROKER is required")
 	}
 
 	return cfg, nil
