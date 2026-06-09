@@ -10,6 +10,7 @@ import (
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/config"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/providers"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/session"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
 )
 
 func main() {
@@ -31,6 +32,13 @@ func main() {
 	}
 	rdb := redis.NewClient(opt)
 
+	// ── init Postgres ──────────────────────────────────────────────────────────
+	dbPool, err := analytics.NewPostgresPool(cfg.PostgresURL)
+	if err != nil {
+		log.Fatalf("postgres error: %v", err)
+	}
+	analyticsLogger := analytics.NewLogger(dbPool)
+
 	// ── init Groq provider (Feature 2) ───────────────────────────────────────
 	groqProvider := providers.NewGroqProvider(cfg.GroqAPIKey)
 	log.Printf("LLM provider: %s", groqProvider.Name())
@@ -39,7 +47,7 @@ func main() {
 	store := session.NewStore(rdb)
 
 	// ── init chat handler (Feature 2) ────────────────────────────────────────
-	handler := NewHandler(groqProvider, store)
+	handler := NewHandler(groqProvider, store, analyticsLogger)
 
 	// ── router ───────────────────────────────────────────────────────────────
 	r := gin.Default()

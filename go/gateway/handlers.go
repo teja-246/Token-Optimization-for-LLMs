@@ -14,6 +14,7 @@ import (
 
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/providers"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/session"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
 )
 
 // ChatRequest is the JSON body for POST /v1/chat.
@@ -26,10 +27,20 @@ type ChatRequest struct {
 type Handler struct {
 	provider providers.LLMProvider
 	store    *session.Store
+	logger *analytics.Logger
 }
 
-func NewHandler(p providers.LLMProvider, s *session.Store) *Handler {
-	return &Handler{provider: p, store: s}
+func NewHandler(
+	p providers.LLMProvider,
+	s *session.Store,
+	l *analytics.Logger,
+) *Handler {
+
+	return &Handler{
+		provider: p,
+		store:    s,
+		logger:   l,
+	}
 }
 
 // ── SSE event payloads ────────────────────────────────────────────────────────
@@ -185,6 +196,22 @@ func (h *Handler) Chat(c *gin.Context) {
 					fmt.Printf("[WARN] [%s] failed to persist assistant response: %v\n", requestID, err)
 				}
 			}
+			h.logger.Log(analytics.RequestLog{
+				RequestID: requestID,
+				UserID:    userID,
+
+				Model: model,
+
+				InputTokens:  finalEvent.InputTokens,
+				OutputTokens: finalEvent.OutputTokens,
+
+				LatencyMs: finalEvent.LatencyMs,
+
+				CacheHit:      false,
+				CycleDetected: false,
+
+				CostUSD: 0,
+			})
 
 			return false // stop streaming
 		}

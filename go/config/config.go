@@ -7,10 +7,11 @@ import (
 
 // Config holds all runtime configuration loaded from environment variables.
 type Config struct {
-	Port       string
-	JWTSecret  string
-	RedisURL   string
-	GroqAPIKey string
+	Port        string
+	JWTSecret   string
+	RedisURL    string
+	GroqAPIKey  string
+	PostgresURL string
 }
 
 // Load reads configuration from environment variables.
@@ -21,6 +22,7 @@ func Load() (*Config, error) {
 		JWTSecret:  os.Getenv("JWT_SECRET"),
 		RedisURL:   getEnv("REDIS_URL", "redis://localhost:6379"),
 		GroqAPIKey: os.Getenv("GROQ_API_KEY"),
+		PostgresURL: os.Getenv("POSTGRES_URL"),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -28,6 +30,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.GroqAPIKey == "" {
 		return nil, fmt.Errorf("GROQ_API_KEY is required — get a free key at console.groq.com")
+	}
+	if cfg.PostgresURL == "" {
+		return nil, fmt.Errorf("POSTGRES_URL is required")
 	}
 
 	return cfg, nil
