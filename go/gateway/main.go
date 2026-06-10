@@ -11,6 +11,7 @@ import (
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/providers"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/session"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/cache"
 )
 
 func main() {
@@ -52,8 +53,21 @@ func main() {
 	// ── init session store (Feature 2) ───────────────────────────────────────
 	store := session.NewStore(rdb)
 
+	// ── Feature 4: semantic cache client ─────────────────────────────────────
+	// Connects to the Python ML gRPC server.
+	// Connection is lazy — gateway starts even if Python service isn't ready yet.
+	cacheClient, err := cache.NewClient(cfg.MLGRPCAddr)
+	if err != nil {
+		// non-fatal: cache is optional — gateway runs without it (all misses)
+		log.Printf("[WARN] cache client init failed (%v) — running without cache", err)
+		cacheClient = nil
+	} else {
+		log.Printf("cache gRPC client → %s", cfg.MLGRPCAddr)
+		defer cacheClient.Close()
+	}
+
 	// ── init chat handler (Feature 2) ────────────────────────────────────────
-	handler := NewHandler(groqProvider, store, analyticsLogger)
+	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient)
 
 	// ── router ───────────────────────────────────────────────────────────────
 	r := gin.Default()
@@ -63,6 +77,7 @@ func main() {
 		c.JSON(200, gin.H{
 			"status":   "ok",
 			"provider": groqProvider.Name(),
+			"cache":	cacheClient != nil,
 		})
 	})
 
@@ -79,7 +94,7 @@ func main() {
 	}
 
 	// ── start server ─────────────────────────────────────────────────────────
-	log.Printf("Aether gateway listening on :%s", cfg.Port)
+	log.Printf("Gateway listening on :%s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

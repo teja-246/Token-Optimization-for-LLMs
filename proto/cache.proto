@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package cache;
+
+option go_package = "go/gen/cache";
+
+// CacheService is implemented by the Python ML server.
+// The Go gateway calls it as a gRPC client on every request.
+service CacheService {
+  // Query checks whether a semantically similar prompt exists in the cache.
+  // Returns the cached response and a tier classification (HIT / FEW_SHOT / MISS).
+  rpc Query (CacheQueryRequest) returns (CacheQueryResponse);
+
+  // Write stores a new prompt+response pair in the vector cache.
+  // Called after a successful LLM response (cache miss path only).
+  rpc Write (CacheWriteRequest) returns (CacheWriteResponse);
+}
+
+// ── Query ─────────────────────────────────────────────────────────────────────
+
+message CacheQueryRequest {
+  string prompt     = 1;
+  string session_id = 2;
+  string request_id = 3; // for tracing
+}
+
+message CacheQueryResponse {
+  // tier is one of: "HIT" | "FEW_SHOT" | "MISS"
+  //   HIT       — similarity > 0.95 — skip LLM, return response directly
+  //   FEW_SHOT  — similarity 0.85–0.95 — inject response as context, still call LLM
+  //   MISS      — similarity < 0.85 — proceed normally
+  string tier       = 1;
+  float  similarity = 2; // cosine similarity [0, 1]
+  string response   = 3; // populated for HIT and FEW_SHOT; empty for MISS
+}
+
+// ── Write ─────────────────────────────────────────────────────────────────────
+
+message CacheWriteRequest {
+  string prompt     = 1;
+  string response   = 2;
+  string session_id = 3;
+  string request_id = 4;
+}
+
+message CacheWriteResponse {
+  bool success = 1;
+}

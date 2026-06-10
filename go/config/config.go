@@ -13,6 +13,7 @@ type Config struct {
 	GroqAPIKey  string
 	PostgresURL string
 	KafkaBroker string
+	MLGRPCAddr string
 }
 
 // Load reads configuration from environment variables.
@@ -25,6 +26,7 @@ func Load() (*Config, error) {
 		GroqAPIKey: os.Getenv("GROQ_API_KEY"),
 		PostgresURL: os.Getenv("POSTGRES_URL"),
 		KafkaBroker: os.Getenv("KAFKA_BROKER"),
+		MLGRPCAddr: getEnv("ML_GRPC_ADDR", "localhost:50051"),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -38,6 +40,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.KafkaBroker == "" {
 		return nil, fmt.Errorf("KAFKA_BROKER is required")
+	}
+	if cfg.MLGRPCAddr == "" {
+		return nil, fmt.Errorf("ML_GRPC_ADDR is required")
 	}
 
 	return cfg, nil
