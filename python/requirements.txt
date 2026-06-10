@@ -1,0 +1,19 @@
+# Aether Python ML service dependencies
+# Install: pip install -r requirements.txt
+
+# gRPC
+grpcio>=1.62.0
+grpcio-tools>=1.62.0
+protobuf>=4.25.0
+
+# Embeddings
+sentence-transformers>=2.7.0
+
+# Vector store
+chromadb>=0.4.24
+
+# Redis (session store, used by later features)
+redis>=5.0.3
+
+# Utilities
+python-dotenv>=1.0.0

@@ -36,14 +36,14 @@ func NewHandler(
 	p providers.LLMProvider,
 	s *session.Store,
 	l *analytics.Logger,
-	c *cache.Client
+	c *cache.Client,
 ) *Handler {
 
 	return &Handler{
 		provider: p,
 		store:    s,
 		logger:   l,
-		cache:    c,
+		cacheClient:    c,
 	}
 }
 
@@ -126,8 +126,8 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	// ── Feature 4: semantic cache lookup ─────────────────────────────────────
 	cacheResult := cache.QueryResult{Tier: cache.TierMiss}
-	if h.cache != nil {
-		cacheResult = h.cache.Query(c.Request.Context(), req.Prompt, sessionID, requestID)
+	if h.cacheClient != nil {
+		cacheResult = h.cacheClient.Query(c.Request.Context(), req.Prompt, sessionID, requestID)
 	}
  
 	switch cacheResult.Tier {
@@ -230,11 +230,11 @@ func (h *Handler) Chat(c *gin.Context) {
 			h.saveAssistantMessage(sessionID, requestID, response)
 
 			// async cache write
-			if h.cache != nil &&
+			if h.cacheClient != nil &&
 				response != "" &&
 				cacheResult.Tier == cache.TierMiss {
 
-				h.cache.WriteAsync(
+				h.cacheClient.WriteAsync(
 					req.Prompt,
 					response,
 					sessionID,

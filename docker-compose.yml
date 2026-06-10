@@ -16,7 +16,7 @@ services:
     environment:
       PORT:         "8000"
       REDIS_URL:    redis://redis:6379
-      POSTGRES_URL: postgres://aether:secret@postgres:5432/aether
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/tokenopti?sslmode=disable
       ML_GRPC_ADDR: python-ml:50051
       GROQ_API_KEY: ${GROQ_API_KEY}
       JWT_SECRET:   ${JWT_SECRET}
@@ -57,15 +57,15 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_DB:       aether
-      POSTGRES_USER:     aether
-      POSTGRES_PASSWORD: secret
+      POSTGRES_DB:       tokenopti
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aether"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tokenopti || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5

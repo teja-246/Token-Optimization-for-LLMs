@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "aether/gen/cache"
+	pb "github.com/teja-246/Token-Optimization-for-LLMs/go/gen/cache"
 )
 
 // Tier constants mirror the proto tier string values.
