@@ -2,9 +2,9 @@
 semantic_cache.py — ChromaDB interface for the semantic cache.
 
 Three-tier similarity logic:
-  similarity > 0.95  → HIT       — return cached response, skip LLM entirely
-  0.85 ≤ sim ≤ 0.95  → FEW_SHOT  — inject as context, still call LLM
-  similarity < 0.85  → MISS      — proceed to LLM normally
+  similarity > 0.88  → HIT       — return cached response, skip LLM entirely
+  0.85 ≤ sim ≤ 0.72  → FEW_SHOT  — inject as context, still call LLM
+  similarity < 0.72  → MISS      — proceed to LLM normally
 
 Similarity is cosine similarity derived from ChromaDB's cosine distance:
   cosine_similarity = 1 - cosine_distance
@@ -22,8 +22,8 @@ from cache.embedding import embed
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
-THRESHOLD_HIT       = 0.95  # above this → cache HIT, skip LLM
-THRESHOLD_FEW_SHOT  = 0.85  # above this → FEW_SHOT, inject as context
+THRESHOLD_HIT       = 0.88  # above this → cache HIT, skip LLM
+THRESHOLD_FEW_SHOT  = 0.72  # above this → FEW_SHOT, inject as context
 
 # ── Result type ───────────────────────────────────────────────────────────────
 

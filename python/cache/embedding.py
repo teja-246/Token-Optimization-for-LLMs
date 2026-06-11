@@ -10,7 +10,7 @@ Uses all-MiniLM-L6-v2:
 The model is loaded once at module level (singleton pattern).
 Subsequent calls to embed() reuse the loaded model — no cold start per request.
 """
-
+import threading
 from sentence_transformers import SentenceTransformer
 
 # Load once at import time.
@@ -18,6 +18,7 @@ from sentence_transformers import SentenceTransformer
 # Subsequent imports (same process) reuse the in-memory instance.
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _model: SentenceTransformer | None = None
+_lock: threading.Lock = threading.Lock()
 
 
 def _get_model() -> SentenceTransformer:
@@ -25,7 +26,8 @@ def _get_model() -> SentenceTransformer:
     if _model is None:
         print(f"[embedding] loading model: {_MODEL_NAME}")
         _model = SentenceTransformer(_MODEL_NAME)
-        print(f"[embedding] model loaded — embedding dim: {_model.get_sentence_embedding_dimension()}")
+        dim = _model.get_embedding_dimension()
+        print(f"[embedding] model loaded — dim: {dim}")
     return _model
 
 
