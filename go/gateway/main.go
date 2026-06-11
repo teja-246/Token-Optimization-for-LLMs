@@ -12,6 +12,7 @@ import (
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/session"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/cache"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/pruning"
 )
 
 func main() {
@@ -66,8 +67,18 @@ func main() {
 		defer cacheClient.Close()
 	}
 
+	// Feature 5: pruning client
+	pruningClient, err := pruning.NewClient(cfg.MLGRPCAddr)
+	if err != nil {
+		log.Printf("[WARN] pruning client unavailable (%v) — running without pruning", err)
+		pruningClient = nil
+	} else {
+		log.Printf("pruning gRPC → %s", cfg.MLGRPCAddr)
+		defer pruningClient.Close()
+	}
+
 	// ── init chat handler (Feature 2) ────────────────────────────────────────
-	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient)
+	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient, pruningClient)
 
 	// ── router ───────────────────────────────────────────────────────────────
 	r := gin.Default()
@@ -78,6 +89,7 @@ func main() {
 			"status":   "ok",
 			"provider": groqProvider.Name(),
 			"cache":	cacheClient != nil,
+			"pruning":  pruningClient != nil,
 		})
 	})
 

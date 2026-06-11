@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package pruning;
+
+option go_package = "go/gen/pruning";
+
+// PruningService is implemented by the Python ML server.
+// Called by the Go gateway on every request before cache lookup.
+service PruningService {
+  rpc Prune (PruneRequest) returns (PruneResponse);
+}
+
+// ConvMessage mirrors providers.Message on the Go side.
+// Defined here so the pruning service can also compress history.
+message ConvMessage {
+  string role    = 1; // "user" | "assistant" | "system"
+  string content = 2;
+}
+
+message PruneRequest {
+  string               prompt     = 1; // raw user prompt
+  repeated ConvMessage history    = 2; // full conversation history
+  string               request_id = 3; // for tracing
+}
+
+message PruneResponse {
+  string               pruned_prompt     = 1; // compressed prompt
+  repeated ConvMessage pruned_history    = 2; // compressed history
+  int32                original_tokens   = 3; // total tokens before pruning
+  int32                pruned_tokens     = 4; // total tokens after pruning
+  float                compression_ratio = 5; // pruned / original (< 1.0 = savings)
+}

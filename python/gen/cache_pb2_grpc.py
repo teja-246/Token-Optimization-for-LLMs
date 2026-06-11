@@ -3,7 +3,6 @@
 import grpc
 import warnings
 
-# import cache_pb2 as cache__pb2
 from . import cache_pb2 as cache__pb2
 
 GRPC_GENERATED_VERSION = '1.81.0'

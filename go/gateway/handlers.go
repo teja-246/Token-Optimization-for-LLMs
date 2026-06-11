@@ -16,6 +16,7 @@ import (
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/session"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/cache"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/pruning"
 )
 
 // ChatRequest is the JSON body for POST /v1/chat.
@@ -30,6 +31,7 @@ type Handler struct {
 	store    *session.Store
 	logger *analytics.Logger
 	cacheClient *cache.Client
+	pruningClient *pruning.Client
 }
 
 func NewHandler(
@@ -37,6 +39,7 @@ func NewHandler(
 	s *session.Store,
 	l *analytics.Logger,
 	c *cache.Client,
+	pr *pruning.Client,
 ) *Handler {
 
 	return &Handler{
@@ -44,6 +47,7 @@ func NewHandler(
 		store:    s,
 		logger:   l,
 		cacheClient:    c,
+		pruningClient: pr,
 	}
 }
 
@@ -63,6 +67,9 @@ type sseFinalEvent struct {
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	LatencyMs    int64  `json:"latency_ms"`
+	OriginalTokens   int32   `json:"original_tokens"`   // before pruning
+	PrunedTokens     int32   `json:"pruned_tokens"`     // after pruning
+	CompressionRatio float32 `json:"compression_ratio"` // pruned/original
 }
 
 type sseErrorEvent struct {
@@ -124,17 +131,30 @@ func (h *Handler) Chat(c *gin.Context) {
 		fmt.Printf("[WARN] [%s] failed to persist user message: %v\n", requestID, err)
 	}
 
+	// Feature 5: prune prompt + history ──────────────────────────────────
+	pruneResult := pruning.PruneResult{
+		PrunedPrompt:     req.Prompt,
+		PrunedHistory:    history,
+		CompressionRatio: 1.0,
+	}
+	if h.pruningClient != nil {
+		pruneResult = h.pruningClient.Prune(c.Request.Context(), req.Prompt, history, requestID)
+	}
+ 
+	prunedPrompt  := pruneResult.PrunedPrompt
+	prunedHistory := pruneResult.PrunedHistory
+
 	// ── Feature 4: semantic cache lookup ─────────────────────────────────────
 	cacheResult := cache.QueryResult{Tier: cache.TierMiss}
 	if h.cacheClient != nil {
-		cacheResult = h.cacheClient.Query(c.Request.Context(), req.Prompt, sessionID, requestID)
+		cacheResult = h.cacheClient.Query(c.Request.Context(), prunedPrompt, sessionID, requestID)
 	}
  
 	switch cacheResult.Tier {
  
 	case cache.TierHit:
 		// Return the cached response immediately — no LLM call
-		h.streamCachedResponse(c, cacheResult, sessionID, requestID, userID)
+		h.streamCachedResponse(c, cacheResult, pruneResult, sessionID, requestID, userID)
 		// still persist the assistant message to session history
 		h.saveAssistantMessage(sessionID, requestID, cacheResult.Response)
 		return
@@ -150,7 +170,7 @@ func (h *Handler) Chat(c *gin.Context) {
 			),
 		}
 		// Prepend hint so it appears before the conversation history
-		history = append([]providers.Message{hint}, history...)
+		prunedHistory = append([]providers.Message{hint}, prunedHistory...)
  
 	case cache.TierMiss:
 		// proceed normally — nothing to inject
@@ -158,12 +178,12 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	// classify prompt → select model
 	// Feature 6 will replace ClassifyPrompt with a Python gRPC call
-	class := providers.ClassifyPrompt(req.Prompt)
+	class := providers.ClassifyPrompt(prunedPrompt)
 	model := providers.SelectModel(class)
 
 	// build the completion request with the full conversation history
 	completionReq := providers.CompletionRequest{
-		Messages:  history, // ← full history: every provider sees the whole conversation
+		Messages:  prunedHistory, // pruned history only
 		Model:     model,
 		MaxTokens: 1024,
 		RequestID: requestID,
@@ -213,6 +233,9 @@ func (h *Handler) Chat(c *gin.Context) {
 				SessionID: sessionID,
 				Cache:      cacheResult.Tier,
 				Similarity: cacheResult.Similarity,
+				OriginalTokens:   pruneResult.OriginalTokens,
+				PrunedTokens:     pruneResult.PrunedTokens,
+				CompressionRatio: pruneResult.CompressionRatio,
 			}
 			if token.Usage != nil {
 				finalEvent.InputTokens = token.Usage.InputTokens
@@ -235,7 +258,7 @@ func (h *Handler) Chat(c *gin.Context) {
 				cacheResult.Tier == cache.TierMiss {
 
 				h.cacheClient.WriteAsync(
-					req.Prompt,
+					prunedPrompt,
 					response,
 					sessionID,
 					requestID,
@@ -263,7 +286,7 @@ func (h *Handler) Chat(c *gin.Context) {
 				OutputTokens: finalEvent.OutputTokens,
 				LatencyMs: finalEvent.LatencyMs,
 
-				CacheHit:      false,
+				CacheHit:      cacheResult.Tier == cache.TierHit,
 				CycleDetected: false,
 				CostUSD: 0,
 			})
@@ -285,6 +308,7 @@ func (h *Handler) Chat(c *gin.Context) {
 func (h *Handler) streamCachedResponse(
 	c *gin.Context,
 	result cache.QueryResult,
+	pruneResult pruning.PruneResult,
 	sessionID, requestID, userID string,
 ) {
 	c.Header("Content-Type",  "text/event-stream")
@@ -312,9 +336,9 @@ func (h *Handler) streamCachedResponse(
 			Cache:        "HIT",
 			Similarity:   result.Similarity,
 			SessionID:    sessionID,
-			InputTokens:  0,
-			OutputTokens: 0,
-			LatencyMs:    0, // ~sub-millisecond — not worth measuring
+			OriginalTokens:   pruneResult.OriginalTokens,
+			PrunedTokens:     pruneResult.PrunedTokens,
+			CompressionRatio: pruneResult.CompressionRatio,
 		})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return false

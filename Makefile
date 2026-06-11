@@ -1,4 +1,4 @@
-# — Makefile
+# Makefile
 # Run `make proto` once after any .proto file change.
 # Commit the generated files — teammates should not need protoc installed.
 
@@ -10,23 +10,21 @@ PROTO_DIR   := proto
 GO_OUT      := go/gen
 PYTHON_OUT  := python/gen
 
-.PHONY: proto proto-go proto-python install-tools
-
 ## Generate all proto bindings (Go + Python)
+.PHONY: proto proto-go proto-python install-tools test-go test-python up down
 proto: proto-go proto-python
-
 ## Generate Go bindings
 proto-go:
-	@mkdir -p $(GO_OUT)/cache
-	protoc --go_out=$(GO_OUT) --go_opt=paths=source_relative --go-grpc_out=$(GO_OUT) --go-grpc_opt=paths=source_relative -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto
-	@echo "Go bindings generated → $(GO_OUT)/cache/"
+	@New-Item -ItemType Directory -Force -Path "$(GO_OUT)/cache","$(GO_OUT)/pruning" | Out-Null
+	protoc --go_out=$(GO_OUT) --go_opt=paths=source_relative --go-grpc_out=$(GO_OUT) --go-grpc_opt=paths=source_relative -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto $(PROTO_DIR)/pruning.proto
+	@echo "Go bindings → $(GO_OUT)/"
 
 ## Generate Python bindings
 proto-python:
-	@mkdir -p $(PYTHON_OUT)
-	@touch $(PYTHON_OUT)/__init__.py
-	python -m grpc_tools.protoc --python_out=$(PYTHON_OUT) --grpc_python_out=$(PYTHON_OUT) -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto
-	@echo "Python bindings generated → $(PYTHON_OUT)/"
+	@New-Item -ItemType Directory -Force -Path "$(PYTHON_OUT)" | Out-Null
+	@Set-Content -Value "" -Path "$(PYTHON_OUT)/__init__.py"
+	python -m grpc_tools.protoc --python_out=$(PYTHON_OUT) --grpc_python_out=$(PYTHON_OUT) -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto $(PROTO_DIR)/pruning.proto
+	@echo "Python bindings → $(PYTHON_OUT)/"
 
 ## Install protoc plugins (run once on a fresh machine)
 install-tools:

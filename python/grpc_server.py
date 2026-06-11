@@ -22,7 +22,9 @@ from concurrent import futures
 import grpc
 
 from gen import cache_pb2_grpc
+from gen import pruning_pb2_grpc
 from cache.servicer import CacheServicer
+from pruning.servicer import PruningServicer
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -51,6 +53,10 @@ def serve() -> None:
 
     # Future features register here:
     # Feature 5:  pruning_pb2_grpc.add_PruningServiceServicer_to_server(PruningServicer(), server)
+    pruning_pb2_grpc.add_PruningServiceServicer_to_server(
+        PruningServicer(),
+        server,
+    )
     # Feature 6:  routing_pb2_grpc.add_RoutingServiceServicer_to_server(RoutingServicer(), server)
     # Feature 8:  verification_pb2_grpc.add_VerificationServiceServicer_to_server(...)
     # Feature 9:  cycle_pb2_grpc.add_CycleServiceServicer_to_server(...)
