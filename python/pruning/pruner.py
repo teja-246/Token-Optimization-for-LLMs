@@ -57,6 +57,8 @@ def prune(prompt: str, history: list[dict]) -> PruneResult:
     pruned_total      = count_tokens(pruned_prompt) + count_messages_tokens(pruned_history)
     compression_ratio = (pruned_total / original_total) if original_total > 0 else 1.0
 
+    # print(f"Pruned prompt='{pruned_prompt}'")
+    # print(f"Original tokens: {original_total}, Pruned tokens: {pruned_total}, Compression ratio: {compression_ratio:.2f}")
     return PruneResult(
         pruned_prompt     = pruned_prompt,
         pruned_history    = pruned_history,

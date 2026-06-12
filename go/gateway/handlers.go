@@ -264,19 +264,7 @@ func (h *Handler) Chat(c *gin.Context) {
 					requestID,
 				)
 			}
-			// persist the assistant's full response to session history
-			// use a fresh context — the request context may close as we write
-			// if fullResponse.Len() > 0 {
-			// 	saveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			// 	defer cancel()
-			// 	assistantMsg := providers.Message{
-			// 		Role:    providers.RoleAssistant,
-			// 		Content: fullResponse.String(),
-			// 	}
-			// 	if err := h.store.Append(saveCtx, sessionID, assistantMsg); err != nil {
-			// 		fmt.Printf("[WARN] [%s] failed to persist assistant response: %v\n", requestID, err)
-			// 	}
-			// }
+			
 			h.logger.Log(analytics.RequestLog{
 				RequestID: requestID,
 				UserID:    userID,
@@ -340,6 +328,17 @@ func (h *Handler) streamCachedResponse(
 			PrunedTokens:     pruneResult.PrunedTokens,
 			CompressionRatio: pruneResult.CompressionRatio,
 		})
+		h.logger.Log(analytics.RequestLog{
+		    RequestID:    requestID,
+		    UserID:       userID,
+		    Model:        "cache",
+		    InputTokens:  0,
+		    OutputTokens: 0,
+		    LatencyMs:    0,
+		    CacheHit:     true,
+		    CycleDetected: false,
+		    CostUSD:      0,
+})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return false
 	})
