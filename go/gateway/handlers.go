@@ -17,6 +17,7 @@ import (
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/cache"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/pruning"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/cycledetector"
 )
 
 // ChatRequest is the JSON body for POST /v1/chat.
@@ -32,6 +33,7 @@ type Handler struct {
 	logger *analytics.Logger
 	cacheClient *cache.Client
 	pruningClient *pruning.Client
+	cycleClient *cycledetector.Client
 }
 
 func NewHandler(
@@ -40,6 +42,7 @@ func NewHandler(
 	l *analytics.Logger,
 	c *cache.Client,
 	pr *pruning.Client,
+	cy *cycledetector.Client,
 ) *Handler {
 
 	return &Handler{
@@ -48,6 +51,7 @@ func NewHandler(
 		logger:   l,
 		cacheClient:    c,
 		pruningClient: pr,
+		cycleClient:    cy,
 	}
 }
 
@@ -55,8 +59,29 @@ func NewHandler(
 
 type sseTokenEvent struct {
 	Token string `json:"token"`
+	Phase string `json:"phase,omitempty"` 
 }
 
+// sseLoopDetectedEvent notifies the client that the previous response(s)
+// were stuck in a hallucination/debug loop and remediation is starting.
+// Sent BEFORE the (slower) remediation call so the UI can show a
+// "verifying..." state immediately.
+type sseLoopDetectedEvent struct {
+	Type        string `json:"type"` // "loop_detected"
+	CycleLength int32  `json:"cycle_length"`
+	Message     string `json:"message"`
+}
+// sseRemediationEvent carries the CoVe diagnosis and model escalation
+// decision once the (web-search-backed) remediation call completes.
+type sseRemediationEvent struct {
+	Type             string `json:"type"` // "remediation"
+	Diagnosis        string `json:"diagnosis"`
+	SearchPerformed  bool   `json:"search_performed"`
+	PreviousModel    string `json:"previous_model"`
+	NewModel         string `json:"new_model"`
+	Escalated        bool   `json:"escalated"`
+	Message          string `json:"message"`
+}
 type sseFinalEvent struct {
 	Done         bool   `json:"done"`
 	Model        string `json:"model"`
@@ -70,6 +95,8 @@ type sseFinalEvent struct {
 	OriginalTokens   int32   `json:"original_tokens"`   // before pruning
 	PrunedTokens     int32   `json:"pruned_tokens"`     // after pruning
 	CompressionRatio float32 `json:"compression_ratio"` // pruned/original
+	CycleDetected    bool    `json:"cycle_detected"`
+	RemediationApplied bool  `json:"remediation_applied"`
 }
 
 type sseErrorEvent struct {
@@ -90,14 +117,25 @@ func writeSSE(w io.Writer, payload any) {
 
 // Chat handles POST /v1/chat.
 //
-// Flow:
-//  1. Parse request, resolve or create session_id
-//  2. Load conversation history from Redis
-//  3. Append user message to history
-//  4. Classify prompt → select model (placeholder for Feature 6 ML router)
-//  5. Call Groq via the provider interface with the full history
-//  6. Stream SSE tokens to the client
-//  7. On final token, persist assistant response to Redis
+// Full pipeline (Features 1, 2, 3, 4, 5, 9):
+//  1. Parse request, resolve session_id
+//  2. Load conversation history, append user message
+//  3. [F5] Prune prompt + history
+//  4. [F4] Cache lookup on pruned prompt (HIT / FEW_SHOT / MISS)
+//  5. Classify → select model (current heuristic, Feature 6 placeholder)
+//  6. Call LLM, stream tokens to client
+//  7. [F9] CheckCycle on the completed response
+//     • no cycle → finalize normally
+//     • cycle detected:
+//         - notify client (loop_detected event)
+//         - Remediate (web search + diagnosis + model escalation)
+//         - notify client (remediation event)
+//         - retry LLM call with corrected prompt + recommended model
+//         - stream correction tokens (phase="correction")
+//         - the corrected response becomes the "final" response for
+//           saving/caching/analytics
+//  8. Save assistant response, async cache write, analytics log
+
 func (h *Handler) Chat(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -157,6 +195,17 @@ func (h *Handler) Chat(c *gin.Context) {
 		h.streamCachedResponse(c, cacheResult, pruneResult, sessionID, requestID, userID)
 		// still persist the assistant message to session history
 		h.saveAssistantMessage(sessionID, requestID, cacheResult.Response)
+		h.logger.Log(analytics.RequestLog{
+			RequestID:     requestID,
+			UserID:        userID,
+			Model:         "cache",
+			InputTokens:   0,
+			OutputTokens:  0,
+			LatencyMs:     0,
+			CacheHit:      true,
+			CycleDetected: false,
+			CostUSD:       0,
+		})
 		return
  
 	case cache.TierFewShot:
@@ -225,67 +274,165 @@ func (h *Handler) Chat(c *gin.Context) {
 		}
 
 		if token.IsFinal {
-			// send the final metadata event
-			finalEvent := sseFinalEvent{
-				Done:      true,
-				Model:     model,
-				Class:     string(class),
-				SessionID: sessionID,
-				Cache:      cacheResult.Tier,
-				Similarity: cacheResult.Similarity,
-				OriginalTokens:   pruneResult.OriginalTokens,
-				PrunedTokens:     pruneResult.PrunedTokens,
-				CompressionRatio: pruneResult.CompressionRatio,
+			response := fullResponse.String()
+			finalModel := model
+ 
+			var usage *providers.Usage = token.Usage
+ 
+			// ── Feature 9: cycle check on the completed response ────────────────
+			cycleDetected := false
+			remediationApplied := false
+ 
+			if h.cycleClient != nil && response != "" {
+				checkResult := h.cycleClient.CheckCycle(c.Request.Context(), sessionID, response, requestID)
+ 
+				if checkResult.Action == cycledetector.ActionRemediate {
+					cycleDetected = true
+ 
+					// notify the client immediately — remediation (web search) is slower
+					writeSSE(w, sseLoopDetectedEvent{
+						Type:        "loop_detected",
+						CycleLength: checkResult.Length,
+						Message: fmt.Sprintf(
+							"The previous response repeated content from %d turn(s) ago, "+
+								"suggesting the model is stuck in a loop. Verifying with a "+
+								"web search and re-attempting with a stronger model.",
+							checkResult.Length,
+						),
+					})
+ 
+					remResult := h.cycleClient.Remediate(
+						c.Request.Context(),
+						sessionID,
+						req.Prompt, // original (unpruned) prompt — most faithful to user intent
+						response,
+						checkResult.Length,
+						model,
+						requestID,
+					)
+ 
+					searchPerformed := remResult.SearchContext != ""
+ 
+					var remMsg string
+					if remResult.Escalated {
+						remMsg = fmt.Sprintf(
+							"Loop detected — upgrading from %s to %s for a more accurate answer.",
+							model, remResult.RecommendedModel,
+						)
+					} else {
+						remMsg = fmt.Sprintf(
+							"Loop detected — %s is already the most capable model available. "+
+								"Re-attempting with additional web context.",
+							model,
+						)
+					}
+ 
+					writeSSE(w, sseRemediationEvent{
+						Type:            "remediation",
+						Diagnosis:       remResult.Diagnosis,
+						SearchPerformed: searchPerformed,
+						PreviousModel:   model,
+						NewModel:        remResult.RecommendedModel,
+						Escalated:       remResult.Escalated,
+						Message:         remMsg,
+					})
+ 
+					// ── retry call with corrected prompt + recommended model ──────────
+					correctionMsgs := append(
+						append([]providers.Message{}, prunedHistory...),
+						providers.Message{Role: providers.RoleAssistant, Content: response},
+						providers.Message{Role: providers.RoleSystem, Content: remResult.CorrectedPrompt},
+					)
+ 
+					retryReq := providers.CompletionRequest{
+						Messages:  correctionMsgs,
+						Model:     remResult.RecommendedModel,
+						MaxTokens: 1024,
+						RequestID: requestID,
+						SessionID: sessionID,
+					}
+ 
+					retryCh, retryErr := h.provider.Complete(c.Request.Context(), retryReq)
+					if retryErr != nil {
+						fmt.Printf("[WARN] [%s] remediation retry failed: %v\n", requestID, retryErr)
+					} else {
+						var correctedResponse strings.Builder
+						for rtoken := range retryCh {
+							if rtoken.Err != nil {
+								fmt.Printf("[WARN] [%s] remediation stream error: %v\n", requestID, rtoken.Err)
+								break
+							}
+							if rtoken.IsFinal {
+								if rtoken.Usage != nil {
+									usage = rtoken.Usage // report the retry's usage as authoritative
+								}
+								break
+							}
+							correctedResponse.WriteString(rtoken.Text)
+							writeSSE(w, sseTokenEvent{Token: rtoken.Text, Phase: "correction"})
+						}
+ 
+						if correctedResponse.Len() > 0 {
+							response = correctedResponse.String()
+							finalModel = remResult.RecommendedModel
+							remediationApplied = true
+						}
+					}
+				}
 			}
-			if token.Usage != nil {
-				finalEvent.InputTokens = token.Usage.InputTokens
-				finalEvent.OutputTokens = token.Usage.OutputTokens
-				finalEvent.LatencyMs = token.Usage.LatencyMs
+ 
+			// ── final event ──────────────────────────────────────────────────────
+			finalEvent := sseFinalEvent{
+				Done:               true,
+				Model:              finalModel,
+				Class:              string(class),
+				SessionID:          sessionID,
+				Cache:              cacheResult.Tier,
+				Similarity:         cacheResult.Similarity,
+				OriginalTokens:     pruneResult.OriginalTokens,
+				PrunedTokens:       pruneResult.PrunedTokens,
+				CompressionRatio:   pruneResult.CompressionRatio,
+				CycleDetected:      cycleDetected,
+				RemediationApplied: remediationApplied,
+			}
+			if usage != nil {
+				finalEvent.InputTokens = usage.InputTokens
+				finalEvent.OutputTokens = usage.OutputTokens
+				finalEvent.LatencyMs = usage.LatencyMs
 			}
 			writeSSE(w, finalEvent)
-
-			// OpenAI-style terminator that clients expect
 			fmt.Fprint(w, "data: [DONE]\n\n")
-
-			response := fullResponse.String()
-
-			// async persistence
+ 
+			// ── persist (the corrected response, if remediation applied) ─────────
 			h.saveAssistantMessage(sessionID, requestID, response)
-
-			// async cache write
-			if h.cacheClient != nil &&
-				response != "" &&
-				cacheResult.Tier == cache.TierMiss {
-
-				h.cacheClient.WriteAsync(
-					prunedPrompt,
-					response,
-					sessionID,
-					requestID,
-				)
+ 
+			// ── async cache write (skip if remediation applied — don't cache
+			//    a response we're not confident about until it's been used
+			//    successfully; the next identical query will just regenerate) ────
+			if h.cacheClient != nil && response != "" &&
+				cacheResult.Tier == cache.TierMiss && !remediationApplied {
+				h.cacheClient.WriteAsync(prunedPrompt, response, sessionID, requestID)
 			}
-			
+ 
+			// ── analytics ──────────────────────────────────────────────────────
 			h.logger.Log(analytics.RequestLog{
-				RequestID: requestID,
-				UserID:    userID,
-				Model: model,
-
-				InputTokens:  finalEvent.InputTokens,
-				OutputTokens: finalEvent.OutputTokens,
-				LatencyMs: finalEvent.LatencyMs,
-
+				RequestID:     requestID,
+				UserID:        userID,
+				Model:         finalModel,
+				InputTokens:   finalEvent.InputTokens,
+				OutputTokens:  finalEvent.OutputTokens,
+				LatencyMs:     finalEvent.LatencyMs,
 				CacheHit:      cacheResult.Tier == cache.TierHit,
-				CycleDetected: false,
-				CostUSD: 0,
+				CycleDetected: cycleDetected,
+				CostUSD:       0,
 			})
-
-			return false // stop streaming
+ 
+			return false
 		}
-
-		// stream this token to the client
+ 
 		fullResponse.WriteString(token.Text)
 		writeSSE(w, sseTokenEvent{Token: token.Text})
-		return true // continue streaming
+		return true
 	})
 }
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -328,17 +475,17 @@ func (h *Handler) streamCachedResponse(
 			PrunedTokens:     pruneResult.PrunedTokens,
 			CompressionRatio: pruneResult.CompressionRatio,
 		})
-		h.logger.Log(analytics.RequestLog{
-		    RequestID:    requestID,
-		    UserID:       userID,
-		    Model:        "cache",
-		    InputTokens:  0,
-		    OutputTokens: 0,
-		    LatencyMs:    0,
-		    CacheHit:     true,
-		    CycleDetected: false,
-		    CostUSD:      0,
-})
+// 		h.logger.Log(analytics.RequestLog{
+// 		    RequestID:    requestID,
+// 		    UserID:       userID,
+// 		    Model:        "cache",
+// 		    InputTokens:  0,
+// 		    OutputTokens: 0,
+// 		    LatencyMs:    0,
+// 		    CacheHit:     true,
+// 		    CycleDetected: false,
+// 		    CostUSD:      0,
+// })
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return false
 	})

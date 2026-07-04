@@ -13,6 +13,7 @@ import (
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/analytics"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/cache"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/pruning"
+	"github.com/teja-246/Token-Optimization-for-LLMs/go/cycledetector"
 )
 
 func main() {
@@ -77,8 +78,18 @@ func main() {
 		defer pruningClient.Close()
 	}
 
+	// Feature 9: cycle detector client
+	cycleClient, err := cycledetector.NewClient(cfg.MLGRPCAddr)
+	if err != nil {
+		log.Printf("[WARN] cycle detector unavailable (%v) — running without loop detection", err)
+		cycleClient = nil
+	} else {
+		log.Printf("cycle       gRPC → %s", cfg.MLGRPCAddr)
+		defer cycleClient.Close()
+	}
+
 	// ── init chat handler (Feature 2) ────────────────────────────────────────
-	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient, pruningClient)
+	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient, pruningClient, cycleClient)
 
 	// ── router ───────────────────────────────────────────────────────────────
 	r := gin.Default()
@@ -90,6 +101,7 @@ func main() {
 			"provider": groqProvider.Name(),
 			"cache":	cacheClient != nil,
 			"pruning":  pruningClient != nil,
+			"cycle":    cycleClient != nil,
 		})
 	})
 

@@ -1,15 +1,14 @@
-# Aether Python ML service dependencies
-# Install: pip install -r requirements.txt
+# Aether Python ML service — install: pip install -r requirements.txt
 
 # gRPC
 grpcio>=1.62.0
 grpcio-tools>=1.62.0
 protobuf>=4.25.0
 
-# Embeddings
+# Embeddings (Feature 4)
 sentence-transformers>=2.7.0
 
-# Vector store
+# Vector store (Feature 4)
 chromadb>=0.4.24
 
 # Pruning (Feature 5)
@@ -17,7 +16,10 @@ scikit-learn>=1.4.0
 tiktoken>=0.6.0
 numpy>=1.26.0
 
-# Redis (session store, used by later features)
+# Cycle detection + CoVe web search (Feature 9)
+duckduckgo-search>=6.1.0
+
+# Redis
 redis>=5.0.3
 
 # Utilities

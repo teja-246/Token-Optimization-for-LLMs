@@ -1,17 +1,13 @@
 """
 grpc_server.py — Python ML gRPC server.
 
-Registers all servicers and starts listening on port 50051.
-As more ML features are built (pruning, routing, verification, cycle detector),
-their servicers are added here. The Go gateway always connects to this one address.
-
-Usage:
-    python grpc_server.py
+Registers all servicers. Add new ones here as features are built.
 
 Environment variables:
-    GRPC_PORT       — port to listen on (default: 50051)
-    CHROMA_HOST     — ChromaDB host (default: localhost)
-    CHROMA_PORT     — ChromaDB port (default: 8001)
+    GRPC_PORT    — port to listen on (default: 50051)
+    CHROMA_HOST  — ChromaDB host (default: localhost)
+    CHROMA_PORT  — ChromaDB port (default: 8001)
+    REDIS_URL    — Redis connection URL (default: redis://localhost:6379)
 """
 
 import os
@@ -20,57 +16,58 @@ import sys
 from concurrent import futures
 
 import grpc
+import redis
 
-from gen import cache_pb2_grpc
-from gen import pruning_pb2_grpc
-from cache.servicer import CacheServicer
-from pruning.servicer import PruningServicer
-
-# ── Config ────────────────────────────────────────────────────────────────────
+from gen import cache_pb2_grpc, pruning_pb2_grpc, cycle_pb2_grpc
+from cache.servicer          import CacheServicer
+from pruning.servicer        import PruningServicer
+from cycle_detector.servicer import CycleServicer
 
 GRPC_PORT   = int(os.getenv("GRPC_PORT",   "50051"))
-CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
+CHROMA_HOST =     os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
+REDIS_URL   =     os.getenv("REDIS_URL",   "redis://localhost:6379")
 
-# ── Server ────────────────────────────────────────────────────────────────────
 
 def serve() -> None:
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=10),
         options=[
-            # allow large messages — LLM responses can be long
-            ("grpc.max_send_message_length",    10 * 1024 * 1024),  # 10MB
+            ("grpc.max_send_message_length",    10 * 1024 * 1024),
             ("grpc.max_receive_message_length", 10 * 1024 * 1024),
         ],
     )
 
-    # ── register servicers ────────────────────────────────────────────────────
-    # Feature 4: Semantic Cache
+    # shared Redis client — used by cycle detector (and future features)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+    # ── Feature 4: Semantic Cache ─────────────────────────────────────────────
     cache_pb2_grpc.add_CacheServiceServicer_to_server(
         CacheServicer(chroma_host=CHROMA_HOST, chroma_port=CHROMA_PORT),
         server,
     )
 
-    # Future features register here:
-    # Feature 5:  pruning_pb2_grpc.add_PruningServiceServicer_to_server(PruningServicer(), server)
+    # ── Feature 5: Prompt Pruning ─────────────────────────────────────────────
     pruning_pb2_grpc.add_PruningServiceServicer_to_server(
         PruningServicer(),
         server,
     )
-    # Feature 6:  routing_pb2_grpc.add_RoutingServiceServicer_to_server(RoutingServicer(), server)
-    # Feature 8:  verification_pb2_grpc.add_VerificationServiceServicer_to_server(...)
-    # Feature 9:  cycle_pb2_grpc.add_CycleServiceServicer_to_server(...)
 
-    # ── start ─────────────────────────────────────────────────────────────────
+    # ── Feature 9: Cycle Detector + Remediation (CoVe) ────────────────────────
+    cycle_pb2_grpc.add_CycleServiceServicer_to_server(
+        CycleServicer(redis_client=redis_client),
+        server,
+    )
+
     listen_addr = f"[::]:{GRPC_PORT}"
     server.add_insecure_port(listen_addr)
     server.start()
 
     print(f"[grpc_server] listening on {listen_addr}")
     print(f"[grpc_server] ChromaDB → {CHROMA_HOST}:{CHROMA_PORT}")
-    print(f"[grpc_server] registered servicers: CacheService")
+    print(f"[grpc_server] Redis    → {REDIS_URL}")
+    print(f"[grpc_server] registered: CacheService, PruningService, CycleService")
 
-    # graceful shutdown on SIGTERM (Docker stop) or SIGINT (Ctrl+C)
     def _shutdown(sig, frame):
         print("[grpc_server] shutting down...")
         server.stop(grace=5)
@@ -78,7 +75,6 @@ def serve() -> None:
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
-
     server.wait_for_termination()
 
 

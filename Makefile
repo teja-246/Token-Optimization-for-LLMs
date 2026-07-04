@@ -15,15 +15,15 @@ PYTHON_OUT  := python/gen
 proto: proto-go proto-python
 ## Generate Go bindings
 proto-go:
-	@New-Item -ItemType Directory -Force -Path "$(GO_OUT)/cache","$(GO_OUT)/pruning" | Out-Null
-	protoc --go_out=$(GO_OUT) --go_opt=paths=source_relative --go-grpc_out=$(GO_OUT) --go-grpc_opt=paths=source_relative -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto $(PROTO_DIR)/pruning.proto
+	@New-Item -ItemType Directory -Force -Path "$(GO_OUT)/cache","$(GO_OUT)/pruning","$(GO_OUT)/cycle" | Out-Null
+	protoc --go_out=$(GO_OUT) --go_opt=paths=source_relative --go-grpc_out=$(GO_OUT) --go-grpc_opt=paths=source_relative -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto $(PROTO_DIR)/pruning.proto $(PROTO_DIR)/cycle.proto
 	@echo "Go bindings → $(GO_OUT)/"
 
 ## Generate Python bindings
 proto-python:
 	@New-Item -ItemType Directory -Force -Path "$(PYTHON_OUT)" | Out-Null
 	@Set-Content -Value "" -Path "$(PYTHON_OUT)/__init__.py"
-	python -m grpc_tools.protoc --python_out=$(PYTHON_OUT) --grpc_python_out=$(PYTHON_OUT) -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto $(PROTO_DIR)/pruning.proto
+	python -m grpc_tools.protoc --python_out=$(PYTHON_OUT) --grpc_python_out=$(PYTHON_OUT) -I $(PROTO_DIR) $(PROTO_DIR)/cache.proto $(PROTO_DIR)/pruning.proto $(PROTO_DIR)/cycle.proto
 	@echo "Python bindings → $(PYTHON_OUT)/"
 
 ## Install protoc plugins (run once on a fresh machine)

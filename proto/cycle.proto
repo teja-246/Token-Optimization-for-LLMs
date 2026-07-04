@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package cycle;
+
+option go_package = "github.com/teja-246/Token-Optimization-for-LLMs/go/gen/cycle";
+
+// CycleService detects hallucination/debug loops via a session-scoped
+// response graph, and provides remediation (web-search-backed diagnosis
+// + model escalation) when a loop is found.
+service CycleService {
+  // CheckCycle is called after every LLM response.
+  // Fast — embeds the response and compares against the session's
+  // sliding-window graph (no web search). Always returns quickly.
+  rpc CheckCycle (CycleRequest) returns (CycleResponse);
+
+  // Remediate is called ONLY when CheckCycle reports a cycle.
+  // Performs a web search to ground the diagnosis and builds a
+  // corrected prompt for retrying with an escalated model.
+  rpc Remediate (RemediateRequest) returns (RemediateResponse);
+}
+
+// ── CheckCycle ────────────────────────────────────────────────────────────────
+
+message CycleRequest {
+  string session_id = 1;
+  string response    = 2; // full LLM response text just produced
+  string request_id  = 3;
+}
+
+message CycleResponse {
+  bool   cycle_detected = 1;
+  int32  cycle_length   = 2; // number of turns spanned by the loop
+  string action         = 3; // "PASS" | "REMEDIATE"
+}
+
+// ── Remediate ─────────────────────────────────────────────────────────────────
+
+message RemediateRequest {
+  string session_id       = 1;
+  string original_prompt  = 2; // user's original question for this turn
+  string looping_response = 3; // response that triggered the cycle
+  int32  cycle_length     = 4;
+  string current_model    = 5;
+  string request_id       = 6;
+}
+
+message RemediateResponse {
+  string diagnosis         = 1; // human-readable explanation of what went wrong
+  string search_context    = 2; // summarised web search findings
+  string corrected_prompt  = 3; // system-message content for the retry call
+  string recommended_model = 4; // model to use for the retry
+  bool   escalated         = 5; // true if recommended_model != current_model
+}
