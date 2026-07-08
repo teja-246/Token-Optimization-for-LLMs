@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/providers"
 	"github.com/teja-246/Token-Optimization-for-LLMs/go/session"
@@ -29,11 +30,12 @@ type ChatRequest struct {
 // Handler holds all injected dependencies for the gateway endpoints.
 type Handler struct {
 	provider providers.LLMProvider
-	store    *session.Store
+	store *session.Store
 	logger *analytics.Logger
 	cacheClient *cache.Client
 	pruningClient *pruning.Client
 	cycleClient *cycledetector.Client
+	rdb *goredis.Client
 }
 
 func NewHandler(
@@ -43,6 +45,7 @@ func NewHandler(
 	c *cache.Client,
 	pr *pruning.Client,
 	cy *cycledetector.Client,
+	rdb *goredis.Client,
 ) *Handler {
 
 	return &Handler{
@@ -52,6 +55,7 @@ func NewHandler(
 		cacheClient:    c,
 		pruningClient: pr,
 		cycleClient:    cy,
+		rdb: rdb,
 	}
 }
 
@@ -183,9 +187,11 @@ func (h *Handler) Chat(c *gin.Context) {
 	prunedHistory := pruneResult.PrunedHistory
 
 	// ── Feature 4: semantic cache lookup ─────────────────────────────────────
+	// Skip cache if this session recently had a cycle — the previous answer
+	// was wrong/stuck, so serving it from cache again would repeat the mistake.
 	cacheResult := cache.QueryResult{Tier: cache.TierMiss}
-	if h.cacheClient != nil {
-		cacheResult = h.cacheClient.Query(c.Request.Context(), prunedPrompt, sessionID, requestID)
+	if h.cacheClient != nil && !h.sessionHadCycle(c.Request.Context(), sessionID) {
+    	cacheResult = h.cacheClient.Query(c.Request.Context(), prunedPrompt, sessionID, requestID)
 	}
  
 	switch cacheResult.Tier {
@@ -283,7 +289,7 @@ func (h *Handler) Chat(c *gin.Context) {
 			cycleDetected := false
 			remediationApplied := false
  
-			if h.cycleClient != nil && response != "" {
+			if h.cycleClient != nil && response != "" && cacheResult.Tier == cache.TierMiss{
 				checkResult := h.cycleClient.CheckCycle(c.Request.Context(), sessionID, response, requestID)
  
 				if checkResult.Action == cycledetector.ActionRemediate {
@@ -475,17 +481,6 @@ func (h *Handler) streamCachedResponse(
 			PrunedTokens:     pruneResult.PrunedTokens,
 			CompressionRatio: pruneResult.CompressionRatio,
 		})
-// 		h.logger.Log(analytics.RequestLog{
-// 		    RequestID:    requestID,
-// 		    UserID:       userID,
-// 		    Model:        "cache",
-// 		    InputTokens:  0,
-// 		    OutputTokens: 0,
-// 		    LatencyMs:    0,
-// 		    CacheHit:     true,
-// 		    CycleDetected: false,
-// 		    CostUSD:      0,
-// })
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return false
 	})
@@ -504,5 +499,20 @@ func (h *Handler) saveAssistantMessage(sessionID, requestID, response string) {
 	if err := h.store.Append(ctx, sessionID, assistantMsg); err != nil {
 		fmt.Printf("[WARN] [%s] failed to save assistant message: %v\n", requestID, err)
 	}
+}
+
+// sessionHadCycle checks Redis for a cycle flag on this session.
+// The Python cycle detector sets "cycleflag:{session_id}" with a 1-hour TTL
+// whenever it detects a loop. This prevents cache from serving a response
+// that was previously flagged as wrong/stuck.
+func (h *Handler) sessionHadCycle(ctx context.Context, sessionID string) bool {
+    if h.rdb == nil {
+        return false
+    }
+    val, err := h.rdb.Exists(ctx, fmt.Sprintf("cycleflag:%s", sessionID)).Result()
+    if err != nil {
+        return false // fail open — don't block cache on a Redis error
+    }
+    return val > 0
 }
  

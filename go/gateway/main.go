@@ -89,7 +89,7 @@ func main() {
 	}
 
 	// ── init chat handler (Feature 2) ────────────────────────────────────────
-	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient, pruningClient, cycleClient)
+	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient, pruningClient, cycleClient, rdb)
 
 	// ── router ───────────────────────────────────────────────────────────────
 	r := gin.Default()

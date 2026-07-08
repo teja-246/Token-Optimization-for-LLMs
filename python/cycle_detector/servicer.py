@@ -11,6 +11,7 @@ break inference.
 """
 
 import traceback
+from urllib import request
 
 from gen import cycle_pb2, cycle_pb2_grpc
 from cache.embedding import embed
@@ -18,6 +19,7 @@ from cycle_detector.graph_store import GraphStore
 from cycle_detector.cluster import find_cycle
 from cycle_detector.cove import build_remediation
 
+MIN_CYCLE_LENGTH = 3
 
 class CycleServicer(cycle_pb2_grpc.CycleServiceServicer):
 
@@ -44,8 +46,11 @@ class CycleServicer(cycle_pb2_grpc.CycleServiceServicer):
             # the graph must keep growing to detect future cycles
             self._store.add_node(request.session_id, embedding, request.response)
 
-            action = "REMEDIATE" if cycle_detected else "PASS"
-
+            # action = "REMEDIATE" if cycle_detected else "PASS"
+            action = "REMEDIATE" if (cycle_detected and cycle_length >= MIN_CYCLE_LENGTH) else "PASS"
+            if action == "REMEDIATE":
+                self._store.flag_cycle(request.session_id)
+                           
             return cycle_pb2.CycleResponse(
                 cycle_detected=cycle_detected,
                 cycle_length=cycle_length,

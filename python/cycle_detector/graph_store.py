@@ -19,6 +19,7 @@ import json
 WINDOW_SIZE   = 20              # max nodes kept per session
 TTL_SECONDS   = 24 * 60 * 60    # session graph expires after 24h of inactivity
 SNIPPET_CHARS = 200              # how much of the response text to store for display
+CYCLE_FLAG_TTL = 60 * 60  # 1 hour — if a cycle was detected, skip cache for this session
 
 
 class GraphStore:
@@ -57,3 +58,11 @@ class GraphStore:
     def clear(self, session_id: str) -> None:
         """Remove the session graph entirely. Useful for tests / new conversation."""
         self._redis.delete(self._key(session_id))
+    
+    def flag_cycle(self, session_id: str) -> None:
+        """Mark this session as having had a cycle detected recently."""
+        self._redis.setex(f"cycleflag:{session_id}", CYCLE_FLAG_TTL, "1")
+
+    def has_recent_cycle(self, session_id: str) -> bool:
+        """Returns True if this session detected a cycle within the last hour."""
+        return self._redis.exists(f"cycleflag:{session_id}") == 1

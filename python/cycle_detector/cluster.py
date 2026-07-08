@@ -27,7 +27,7 @@ Threshold:
 import numpy as np
 
 SIMILARITY_THRESHOLD = 0.90
-
+MIN_CYCLE_LENGTH     = 3 
 
 def find_cycle(past_nodes: list[dict], new_embedding: list[float]) -> tuple[bool, int, dict | None]:
     """
