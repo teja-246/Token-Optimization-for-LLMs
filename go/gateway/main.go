@@ -88,12 +88,42 @@ func main() {
 		defer cycleClient.Close()
 	}
 
+	// analyticsLogger := analytics.NewLogger(dbPool, kafkaProducer)
 	// ── init chat handler (Feature 2) ────────────────────────────────────────
 	handler := NewHandler(groqProvider, store, analyticsLogger, cacheClient, pruningClient, cycleClient, rdb)
+
+	analyticsHandler := NewAnalyticsHandler(dbPool)
+	authHandler      := NewAuthHandler(
+		cfg.GoogleClientID,
+		cfg.GoogleClientSecret,
+		cfg.GoogleRedirectURL,
+		cfg.JWTSecret,
+		cfg.FrontendURL,
+	)
 
 	// ── router ───────────────────────────────────────────────────────────────
 	r := gin.Default()
 
+	// ── CORS ─────────────────────────────────────────────────────────────────
+	// Allow the Vite dev server and any configured frontend URL.
+	r.Use(func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+		allowed := map[string]bool{
+			"http://localhost:5173": true,
+			"http://localhost:3000": true,
+			cfg.FrontendURL:        true,
+		}
+		if allowed[origin] {
+			c.Header("Access-Control-Allow-Origin",  origin)
+			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		}
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
 	// health check — unauthenticated, used by docker-compose healthcheck
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -105,6 +135,20 @@ func main() {
 		})
 	})
 
+	// ── OAuth routes — NO JWT middleware ─────────────────────────────────────
+	// These must be reachable before the user has a token.
+	r.GET("/auth/google",          authHandler.GoogleLogin)
+	r.GET("/auth/google/callback", authHandler.GoogleCallback)
+ 
+	// ── Analytics — no JWT (internal dashboard) ───────────────────────────────
+	ag := r.Group("/analytics")
+	{
+		ag.GET("/summary",    analyticsHandler.Summary)
+		ag.GET("/timeseries", analyticsHandler.Timeseries)
+		ag.GET("/models",     analyticsHandler.Models)
+		ag.GET("/requests",   analyticsHandler.Requests)
+		ag.GET("/cycles",     analyticsHandler.Cycles)
+	}
 	// v1 API — all routes behind Feature 1 middleware chain
 	v1 := r.Group("/v1")
 	v1.Use(

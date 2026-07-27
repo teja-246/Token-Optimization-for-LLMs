@@ -6,15 +6,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // proxy /analytics/* to the Go gateway during development
-      '/analytics': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/health': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
+      // all these paths forward to the Go gateway
+      '/auth':      { target: 'http://localhost:8000', changeOrigin: true },
+      '/v1':        { target: 'http://localhost:8000', changeOrigin: true },
+      '/analytics': { target: 'http://localhost:8000', changeOrigin: true },
+      '/health':    { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

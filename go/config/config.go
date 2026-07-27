@@ -14,6 +14,10 @@ type Config struct {
 	PostgresURL string
 	KafkaBroker string
 	MLGRPCAddr string
+	GoogleClientID string
+	GoogleClientSecret string
+	GoogleRedirectURL string
+	FrontendURL string
 }
 
 // Load reads configuration from environment variables.
@@ -27,6 +31,10 @@ func Load() (*Config, error) {
 		PostgresURL: os.Getenv("POSTGRES_URL"),
 		KafkaBroker: os.Getenv("KAFKA_BROKER"),
 		MLGRPCAddr: getEnv("ML_GRPC_ADDR", "localhost:50051"),
+		GoogleClientID: os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURL: os.Getenv("GOOGLE_REDIRECT_URL"),
+		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:5173"),
 	}
 
 	if cfg.JWTSecret == "" {
@@ -43,6 +51,18 @@ func Load() (*Config, error) {
 	}
 	if cfg.MLGRPCAddr == "" {
 		return nil, fmt.Errorf("ML_GRPC_ADDR is required")
+	}
+	if cfg.GoogleClientID == "" {
+		fmt.Println("[WARN] GOOGLE_CLIENT_ID not set — OAuth login will fail")
+	}
+	if cfg.GoogleClientSecret == "" {
+		fmt.Println("[WARN] GOOGLE_CLIENT_SECRET not set — OAuth login will fail")
+	}
+	if cfg.GoogleRedirectURL == "" {
+		fmt.Println("[WARN] GOOGLE_REDIRECT_URL not set — OAuth login will fail")
+	}
+	if cfg.FrontendURL == "" {
+		fmt.Println("[WARN] FRONTEND_URL not set — OAuth login will fail")
 	}
 
 	return cfg, nil

@@ -1,27 +1,23 @@
-// Login.jsx — Phase 1 stub
+// Login.jsx — Phase 2
 //
-// Shows the Aether login screen. The "Sign in with Google" button is
-// visually complete but wired to a dev-only shortcut until Phase 2
-// implements the real OAuth flow.
+// "Sign in with Google" now triggers a real OAuth redirect to /auth/google.
+// The Go server handles the consent flow and redirects back to the frontend
+// with ?token= in the URL, which App.jsx picks up and stores.
 //
-// Phase 2 will:
-//   - Replace handleDevLogin with a redirect to GET /auth/google
-//   - The Go callback will redirect back here with ?token=... in the URL
+// The devLogin() shortcut from Phase 1 is removed.
+// The "Phase 1" dev note is removed.
 
-import { devLogin } from '../utils/auth.js'
-
-export default function Login({ onLogin }) {
-
-  // ── Phase 2 replaces this with: window.location.href = '/auth/google' ──
+export default function Login() {
+  // Clicking the button navigates to the Go gateway's OAuth entry point.
+  // Vite's dev proxy forwards /auth/* to localhost:8000.
   function handleGoogleLogin() {
-    devLogin()        // writes a fake token to localStorage
-    onLogin()         // tells App.jsx auth state has changed
+    window.location.href = '/auth/google'
   }
 
   return (
     <div style={styles.root}>
 
-      {/* background grid decoration */}
+      {/* background dot-grid decoration */}
       <div style={styles.grid} aria-hidden="true" />
 
       {/* card */}
@@ -40,7 +36,20 @@ export default function Login({ onLogin }) {
           for every LLM request.
         </p>
 
-        {/* divider */}
+        {/* feature pills */}
+        <div style={styles.features}>
+          {[
+            { icon: '⚡', label: 'Semantic cache' },
+            { icon: '✂', label: 'Prompt pruning' },
+            { icon: '↻', label: 'Loop detection' },
+          ].map(f => (
+            <div key={f.label} style={styles.featurePill}>
+              <span>{f.icon}</span>
+              <span>{f.label}</span>
+            </div>
+          ))}
+        </div>
+
         <div style={styles.divider} />
 
         {/* OAuth button */}
@@ -49,12 +58,10 @@ export default function Login({ onLogin }) {
           <span>Sign in with Google</span>
         </button>
 
-        {/* Phase 2 notice — remove when real OAuth is wired */}
-        <p style={styles.devNote}>
-          ⚙ Phase 1: clicking the button injects a dev token.
-          Real Google OAuth is implemented in Phase 2.
+        <p style={styles.disclaimer}>
+          Your account is used only to identify your session.
+          No data is shared with third parties.
         </p>
-
       </div>
 
       {/* footer */}
@@ -88,10 +95,8 @@ const styles = {
     overflow: 'hidden',
     gap: 24,
   },
-  // subtle dot-grid background
   grid: {
-    position: 'absolute',
-    inset: 0,
+    position: 'absolute', inset: 0,
     backgroundImage: 'radial-gradient(circle, #1f2d45 1px, transparent 1px)',
     backgroundSize: '32px 32px',
     opacity: 0.5,
@@ -111,66 +116,43 @@ const styles = {
     gap: 16,
     boxShadow: '0 24px 48px rgba(0,0,0,0.4)',
   },
-  logoRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 4,
-  },
+  logoRow: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 },
   logoHex: { fontSize: 32, color: 'var(--indigo-2)' },
-  logoText: {
-    fontSize: 26,
-    fontWeight: 700,
-    letterSpacing: '-0.03em',
-    color: 'var(--text-primary)',
-  },
+  logoText: { fontSize: 26, fontWeight: 700, letterSpacing: '-0.03em' },
   heading: {
-    fontSize: 16,
-    fontWeight: 600,
-    color: 'var(--text-primary)',
-    textAlign: 'center',
-    lineHeight: 1.4,
+    fontSize: 16, fontWeight: 600,
+    textAlign: 'center', lineHeight: 1.4,
   },
   sub: {
-    fontSize: 13,
-    color: 'var(--text-secondary)',
-    textAlign: 'center',
-    lineHeight: 1.6,
-    maxWidth: 300,
+    fontSize: 13, color: 'var(--text-secondary)',
+    textAlign: 'center', lineHeight: 1.6, maxWidth: 300,
   },
-  divider: {
-    width: '100%',
-    height: 1,
-    background: 'var(--border)',
-    margin: '4px 0',
+  features: {
+    display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center',
   },
+  featurePill: {
+    display: 'flex', alignItems: 'center', gap: 5,
+    fontSize: 12, color: 'var(--text-secondary)',
+    background: 'var(--bg-card-2)',
+    border: '1px solid var(--border)',
+    padding: '4px 10px', borderRadius: 20,
+  },
+  divider: { width: '100%', height: 1, background: 'var(--border)', margin: '4px 0' },
   googleBtn: {
     width: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
     padding: '11px 20px',
     background: 'var(--bg-card-2)',
     border: '1px solid var(--border-2)',
     borderRadius: 8,
     color: 'var(--text-primary)',
-    fontSize: 14,
-    fontWeight: 500,
-    cursor: 'pointer',
+    fontSize: 14, fontWeight: 500,
+    cursor: 'pointer', fontFamily: 'inherit',
     transition: 'background 0.15s, border-color 0.15s',
-    fontFamily: 'inherit',
   },
-  devNote: {
-    fontSize: 11,
-    color: 'var(--text-muted)',
-    textAlign: 'center',
-    marginTop: 4,
-    lineHeight: 1.5,
+  disclaimer: {
+    fontSize: 11, color: 'var(--text-muted)',
+    textAlign: 'center', lineHeight: 1.5,
   },
-  footer: {
-    position: 'relative',
-    fontSize: 12,
-    color: 'var(--text-muted)',
-  },
+  footer: { position: 'relative', fontSize: 12, color: 'var(--text-muted)' },
 }
