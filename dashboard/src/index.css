@@ -1,28 +1,36 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg-base:    #0b0f1a;
-  --bg-card:    #131929;
-  --bg-card-2:  #1a2236;
-  --bg-hover:   #1e2a42;
-  --border:     #1f2d45;
-  --border-2:   #263650;
+  /* ── backgrounds ── */
+  --bg-base:   #0b0f1a;
+  --bg-card:   #131929;
+  --bg-card-2: #1a2236;
+  --bg-hover:  #1e2a42;
 
+  /* ── borders ── */
+  --border:    #1f2d45;
+  --border-2:  #263650;
+
+  /* ── text ── */
   --text-primary:   #e2e8f0;
   --text-secondary: #94a3b8;
   --text-muted:     #4f6282;
 
-  --indigo:    #6366f1;
-  --indigo-2:  #818cf8;
-  --green:     #22c55e;
-  --green-2:   #4ade80;
-  --amber:     #f59e0b;
-  --amber-2:   #fbbf24;
-  --red:       #ef4444;
-  --red-2:     #f87171;
-  --cyan:      #06b6d4;
-  --cyan-2:    #22d3ee;
+  /* ── brand colours ── */
+  --indigo:   #6366f1;
+  --indigo-2: #818cf8;
 
+  /* ── semantic colours ── */
+  --green:   #22c55e;
+  --green-2: #4ade80;
+  --amber:   #f59e0b;
+  --amber-2: #fbbf24;
+  --red:     #ef4444;
+  --red-2:   #f87171;
+  --cyan:    #06b6d4;
+  --cyan-2:  #22d3ee;
+
+  /* ── misc ── */
   --radius:    10px;
   --radius-sm: 6px;
   --font-mono: 'JetBrains Mono', monospace;
@@ -38,8 +46,68 @@ body {
   min-height: 100vh;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--bg-base); }
-::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 3px; }
+/* ── scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--border-2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
+/* ── utility ────────────────────────────────────────────────────────────────── */
 .mono { font-family: var(--font-mono); }
+
+/* ── Animation keyframes ─────────────────────────────────────────────────────
+   All animations used by the streaming UI are defined here so they are
+   available to any component that references them via inline style
+   (e.g. animation: 'blink 0.9s step-end infinite').
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/*
+ * blink — streaming cursor inside assistant message bubbles.
+ *
+ * Uses step-end so the cursor snaps between visible and invisible
+ * rather than fading, matching the look of a real terminal cursor.
+ */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/*
+ * bounce — the three-dot "thinking" animation shown while waiting
+ * for the first token to arrive from the backend.
+ *
+ * Each dot is given a different animationDelay so they stagger.
+ */
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0);    opacity: 0.35; }
+  40%           { transform: translateY(-7px); opacity: 1;    }
+}
+
+/*
+ * spin — the circular spinner icon inside the send button while
+ * a request is in-flight.
+ */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/*
+ * pulse — the "Streaming…" pill in the top bar pulses in opacity
+ * while tokens are arriving so the user knows the stream is live.
+ */
+@keyframes pulse {
+  0%, 100% { opacity: 1;    }
+  50%       { opacity: 0.45; }
+}
+
+/*
+ * fadeSlideIn — new message bubbles slide in from slightly below
+ * so the conversation feels fluid rather than jarring.
+ *
+ * Used on both user and assistant message wrappers.
+ */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}

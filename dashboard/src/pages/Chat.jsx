@@ -1,41 +1,268 @@
-// Chat.jsx — Phase 1 stub
+// Chat.jsx — Phase 4.3: streaming fully wired
 //
-// Full layout skeleton: sidebar + main area.
-// No backend calls yet — sending a message logs to console.
-// Phase 3 fills the sidebar with real conversation history.
-// Phase 4 wires up the SSE streaming.
+// ── Stale-closure strategy ────────────────────────────────────────────────────
+//
+// The streamChat callbacks fire outside React's render cycle. If a callback
+// captures a state variable directly (e.g. `messages`) it gets the value
+// from the render in which it was created — not the latest value. This is
+// the classic stale-closure bug.
+//
+// Fix: store all mutable streaming state in refs, and always update React
+// state using the functional form `setMessages(prev => ...)` so we operate
+// on the latest snapshot regardless of when the callback fires.
+//
+// Refs used during a stream:
+//   assistantIdRef  — id of the message currently being built
+//   contentRef      — accumulates main response tokens
+//   correctionRef   — accumulates CoVe correction tokens
+//   eventsRef       — accumulates loop_detected / remediation events
+//   sessionRef      — session UUID for the current conversation
+//
+// ── Message lifecycle ─────────────────────────────────────────────────────────
+//
+//   { loading:true,  streaming:false }  →  thinking bubble (3 dots)
+//   { loading:false, streaming:true  }  →  text building up, cursor blinks
+//   { loading:false, streaming:false }  →  complete, meta tags visible
 
-import { useState, useRef, useEffect } from 'react'
-import { getUser, logout } from '../utils/auth.js'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { getUser }         from '../utils/auth.js'
+import { streamChat, newSessionId } from '../utils/streaming.js'
+import {
+  loadConversations,
+  loadConversation,
+  createConversation,
+  appendMessage,
+  deleteConversation,
+} from '../utils/storage.js'
+import Sidebar     from '../components/Sidebar.jsx'
+import ChatMessage from '../components/ChatMessage.jsx'
 
-// ── placeholder conversation for visual testing ───────────────────────────────
-const PLACEHOLDER_CONVOS = [
-  { id: 'c1', title: 'Explain transformer architecture', active: false },
-  { id: 'c2', title: 'Python async/await patterns',      active: false },
-  { id: 'c3', title: 'Design a Redis cache layer',        active: true  },
+// ── Suggestion chips on the empty state ──────────────────────────────────────
+
+const SUGGESTIONS = [
+  { icon: '🧠', text: 'Explain transformer attention mechanisms' },
+  { icon: '⚡', text: 'Write a Go HTTP middleware for rate limiting' },
+  { icon: '🗄', text: 'Design a Redis-backed semantic cache layer' },
+  { icon: '🔍', text: 'What is token optimization in LLM systems?' },
 ]
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function Chat() {
   const user = getUser()
 
-  const [input,        setInput]        = useState('')
-  const [sidebarOpen,  setSidebarOpen]  = useState(true)
-  const textareaRef = useRef(null)
+  // ── layout ────────────────────────────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
-  // auto-grow textarea
+  // ── conversation list (kept in sync with localStorage) ───────────────────
+  const [conversations, setConversations] = useState(() => loadConversations())
+  const [activeId,      setActiveId]      = useState(null)
+
+  // ── messages for the current conversation ────────────────────────────────
+  const [messages, setMessages] = useState([])
+
+  // ── input / send state ────────────────────────────────────────────────────
+  const [input,   setInput]   = useState('')
+  const [sending, setSending] = useState(false)
+
+  // ── refs ─────────────────────────────────────────────────────────────────
+  const textareaRef    = useRef(null)
+  const bottomRef      = useRef(null)
+  const abortRef       = useRef(null)  // AbortController for the live stream
+
+  // streaming accumulators — updated inside callbacks, never trigger re-renders
+  const assistantIdRef = useRef(null)
+  const contentRef     = useRef('')
+  const correctionRef  = useRef('')
+  const eventsRef      = useRef([])
+  const sessionRef     = useRef(null)
+
+  // ── auto-grow textarea ────────────────────────────────────────────────────
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
   }, [input])
 
-  function handleSend() {
-    const prompt = input.trim()
-    if (!prompt) return
-    // Phase 4 will replace this with the actual SSE call
-    console.log('[Phase 1 stub] sending prompt:', prompt)
+  // ── auto-scroll to latest message ────────────────────────────────────────
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  // ── helper: update the streaming assistant message in state ───────────────
+  // Always uses the functional form so stale closures are never a problem.
+  function patchAssistant(updates) {
+    const id = assistantIdRef.current
+    if (!id) return
+    setMessages(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m))
+  }
+
+  // ── reload sidebar from localStorage ─────────────────────────────────────
+  function refreshConversations() {
+    setConversations(loadConversations())
+  }
+
+  // ── new chat ──────────────────────────────────────────────────────────────
+  const startNewChat = useCallback(() => {
+    abortRef.current?.abort()
+
+    const id = newSessionId()
+    sessionRef.current = id
+
+    setActiveId(null)
+    setMessages([])
     setInput('')
+    setSending(false)
+
+    createConversation(id)
+    refreshConversations()
+
+    // reset textarea height
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    textareaRef.current?.focus()
+  }, [])
+
+  // start a fresh chat on first mount
+  useEffect(() => { startNewChat() }, []) // eslint-disable-line
+
+  // ── switch conversation ───────────────────────────────────────────────────
+  function selectConversation(id) {
+    abortRef.current?.abort()
+
+    const convo = loadConversation(id)
+    if (!convo) return
+
+    sessionRef.current = id
+    setActiveId(id)
+    setMessages(convo.messages)
+    setSending(false)
+    textareaRef.current?.focus()
+  }
+
+  function handleConvoDeleted(deletedId) {
+    deleteConversation(deletedId)
+    refreshConversations()
+    if (activeId === deletedId) startNewChat()
+  }
+
+  // ── send ──────────────────────────────────────────────────────────────────
+  async function handleSend() {
+    const prompt    = input.trim()
+    const sessionId = sessionRef.current
+    if (!prompt || sending) return
+
+    // clear input immediately so user can type the next message
+    setInput('')
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+
+    // ── 1. append user message ────────────────────────────────────────────
+    const userMsg = {
+      id: crypto.randomUUID(), role: 'user',
+      content: prompt, correction: '', events: [],
+      meta: null, error: null, loading: false, streaming: false,
+    }
+    setMessages(prev => [...prev, userMsg])
+    appendMessage(sessionId, {
+      role: 'user', content: prompt,
+      correction: '', events: [], meta: null, error: null,
+    })
+
+    // update sidebar so the title appears from the first message
+    setActiveId(sessionId)
+    refreshConversations()
+
+    // ── 2. add assistant placeholder (thinking bubble) ────────────────────
+    const aId = crypto.randomUUID()
+    assistantIdRef.current = aId
+    contentRef.current     = ''
+    correctionRef.current  = ''
+    eventsRef.current      = []
+
+    setMessages(prev => [...prev, {
+      id: aId, role: 'assistant',
+      content: '', correction: '', events: [],
+      meta: null, error: null,
+      loading: true, streaming: false,
+    }])
+
+    // ── 3. open SSE stream ────────────────────────────────────────────────
+    setSending(true)
+    abortRef.current = new AbortController()
+
+    await streamChat({
+      prompt,
+      sessionId,
+      signal: abortRef.current.signal,
+
+      // ── first token: flip from thinking → streaming ─────────────────
+      onToken(text, phase) {
+        if (phase === 'correction') {
+          correctionRef.current += text
+          patchAssistant({
+            loading:    false,
+            streaming:  true,
+            correction: correctionRef.current,
+          })
+        } else {
+          contentRef.current += text
+          patchAssistant({
+            loading:   false,
+            streaming: true,
+            content:   contentRef.current,
+          })
+        }
+      },
+
+      // ── loop detected: push event card mid-stream ───────────────────
+      onLoopDetected(event) {
+        eventsRef.current = [...eventsRef.current, event]
+        patchAssistant({ events: eventsRef.current })
+      },
+
+      // ── remediation: push card, correction tokens follow ────────────
+      onRemediation(event) {
+        eventsRef.current = [...eventsRef.current, event]
+        patchAssistant({ events: eventsRef.current })
+      },
+
+      // ── final: stop cursor, attach metadata ─────────────────────────
+      onFinal(event) {
+        const finalMsg = {
+          loading:    false,
+          streaming:  false,
+          content:    contentRef.current,
+          correction: correctionRef.current,
+          events:     eventsRef.current,
+          meta:       event,
+          error:      null,
+        }
+        patchAssistant(finalMsg)
+
+        // persist the completed assistant message to localStorage
+        appendMessage(sessionRef.current, {
+          role: 'assistant', ...finalMsg,
+        })
+        refreshConversations()
+        setSending(false)
+      },
+
+      // ── error: replace thinking bubble with error state ─────────────
+      onError(msg) {
+        patchAssistant({ loading: false, streaming: false, error: msg })
+        setSending(false)
+      },
+    })
+
+    // guard: if the stream ended without calling onFinal or onError
+    // (e.g. server closed connection early), clean up gracefully
+    patchAssistant(prev => ({
+      loading:   false,
+      streaming: false,
+      // only set a generic error if neither content nor error arrived
+      ...(prev?.content || prev?.error ? {} : { error: 'No response received.' }),
+    }))
+    setSending(false)
   }
 
   function handleKeyDown(e) {
@@ -45,150 +272,160 @@ export default function Chat() {
     }
   }
 
-  function handleNewChat() {
-    console.log('[Phase 1 stub] new chat')
+  function handleSuggestion(text) {
+    setInput(text)
+    textareaRef.current?.focus()
   }
 
-  function goToAnalytics() {
-    window.location.hash = '#analytics'
-  }
+  // ── derived values ────────────────────────────────────────────────────────
+  const canSend    = input.trim().length > 0 && !sending
+  const activeMeta = conversations.find(c => c.id === activeId)
 
+  // ── render ────────────────────────────────────────────────────────────────
   return (
-    <div style={styles.root}>
+    <div style={s.root}>
 
-      {/* ── Sidebar ── */}
+      {/* ── sidebar ── */}
       {sidebarOpen && (
-        <aside style={styles.sidebar}>
-
-          {/* top: logo + new chat */}
-          <div style={styles.sidebarTop}>
-            <div style={styles.logoRow}>
-              <span style={styles.logoHex}>⬡</span>
-              <span style={styles.logoText}>Aether</span>
-            </div>
-            <button style={styles.newChatBtn} onClick={handleNewChat}>
-              <span style={{ fontSize: 16 }}>＋</span>
-              New Chat
-            </button>
-          </div>
-
-          {/* conversation list */}
-          <div style={styles.convoSection}>
-            <span style={styles.convoLabel}>Recent</span>
-            <div style={styles.convoList}>
-              {PLACEHOLDER_CONVOS.map(c => (
-                <button
-                  key={c.id}
-                  style={{ ...styles.convoItem, ...(c.active ? styles.convoItemActive : {}) }}
-                  onClick={() => console.log('[Phase 1 stub] switch to', c.id)}
-                >
-                  <span style={styles.convoIcon}>💬</span>
-                  <span style={styles.convoTitle}>{c.title}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* bottom: analytics + user */}
-          <div style={styles.sidebarBottom}>
-            <button style={styles.analyticsBtn} onClick={goToAnalytics}>
-              <span>📊</span>
-              Analytics Dashboard
-            </button>
-
-            <div style={styles.userRow}>
-              <div style={styles.avatar}>
-                {user?.picture
-                  ? <img src={user.picture} alt="" style={styles.avatarImg} />
-                  : <span>{(user?.name?.[0] ?? 'U').toUpperCase()}</span>
-                }
-              </div>
-              <div style={styles.userInfo}>
-                <span style={styles.userName}>{user?.name ?? 'User'}</span>
-                <span style={styles.userEmail}>{user?.email ?? ''}</span>
-              </div>
-              <button style={styles.logoutBtn} onClick={logout} title="Sign out">
-                ⏻
-              </button>
-            </div>
-          </div>
-        </aside>
+        <Sidebar
+          conversations={conversations}
+          activeId={activeId}
+          onNewChat={startNewChat}
+          onSelectConvo={selectConversation}
+          onConvoDeleted={handleConvoDeleted}
+          user={user}
+        />
       )}
 
-      {/* ── Main area ── */}
-      <div style={styles.main}>
+      {/* ── main panel ── */}
+      <div style={s.main}>
 
         {/* top bar */}
-        <div style={styles.topBar}>
+        <div style={s.topBar}>
           <button
-            style={styles.toggleBtn}
-            onClick={() => setSidebarOpen(s => !s)}
+            style={s.menuBtn}
+            onClick={() => setSidebarOpen(o => !o)}
             title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
           >
-            ☰
+            <MenuIcon />
           </button>
-          <span style={styles.topBarTitle}>Chat</span>
-          {/* Phase 4 will show current model + session ID here */}
-          <span style={styles.topBarMeta}>Powered by Groq · Llama 3</span>
+
+          <span style={s.topTitle}>
+            {activeMeta?.title ?? 'New Chat'}
+          </span>
+
+          <div style={s.topRight}>
+            {/* streaming indicator */}
+            {sending && (
+              <div style={s.streamPill}>
+                <span style={s.streamDot} />
+                Streaming…
+              </div>
+            )}
+            {/* model indicator */}
+            <div style={s.modelPill}>
+              <span style={s.modelDot} />
+              Llama 3 · Groq
+            </div>
+          </div>
         </div>
 
         {/* message area */}
-        <div style={styles.messages}>
-          {/* Phase 3+ will render actual messages here */}
-          <EmptyState />
+        <div style={s.msgArea}>
+          {messages.length === 0 ? (
+            <EmptyState onSuggestion={handleSuggestion} />
+          ) : (
+            <div style={s.msgList}>
+              {messages.map(m => (
+                <ChatMessage key={m.id} message={m} />
+              ))}
+              {/* invisible anchor for auto-scroll */}
+              <div ref={bottomRef} />
+            </div>
+          )}
         </div>
 
         {/* input bar */}
-        <div style={styles.inputWrap}>
-          <div style={styles.inputBox}>
+        <div style={s.inputWrap}>
+          <div style={{
+            ...s.inputBox,
+            borderColor: sending ? 'var(--indigo)' : 'var(--border-2)',
+          }}>
             <textarea
               ref={textareaRef}
-              style={styles.textarea}
-              placeholder="Message Aether… (Shift+Enter for newline)"
+              style={s.textarea}
+              placeholder={sending ? 'Streaming response…' : 'Message Aether…'}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               rows={1}
+              disabled={sending}
+              aria-label="Message input"
             />
             <button
               style={{
-                ...styles.sendBtn,
-                opacity: input.trim() ? 1 : 0.35,
-                cursor: input.trim() ? 'pointer' : 'default',
+                ...s.sendBtn,
+                background: canSend ? 'var(--indigo)' : 'var(--bg-hover)',
+                cursor:     canSend ? 'pointer'       : 'default',
               }}
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!canSend}
+              aria-label="Send message"
             >
-              ↑
+              {sending ? <SpinnerIcon /> : <UpIcon />}
             </button>
           </div>
-          <p style={styles.inputNote}>
-            Responses pass through Aether's pruning, caching, and cycle detection pipeline.
+          <p style={s.hint}>
+            <kbd style={s.kbd}>Enter</kbd> send &nbsp;·&nbsp;
+            <kbd style={s.kbd}>Shift+Enter</kbd> new line &nbsp;·&nbsp;
+            Processed by Aether
           </p>
         </div>
+
       </div>
     </div>
   )
 }
 
 // ── Empty state ───────────────────────────────────────────────────────────────
-function EmptyState() {
+
+function EmptyState({ onSuggestion }) {
+  const [hov, setHov] = useState(null)
   return (
-    <div style={emptyStyles.root}>
-      <div style={emptyStyles.icon}>⬡</div>
-      <h2 style={emptyStyles.heading}>What can I help you with?</h2>
-      <p style={emptyStyles.sub}>
-        Your prompt will be pruned, checked against the semantic cache,
-        routed to the right model, and monitored for loops — all automatically.
+    <div style={es.root}>
+      <div style={es.iconWrap}>
+        <span style={es.icon}>⬡</span>
+      </div>
+      <h2 style={es.h}>What can I help you with?</h2>
+      <p style={es.p}>
+        Your messages pass through Aether's semantic cache, prompt pruning,
+        intelligent routing, and loop-detection pipeline — automatically.
       </p>
-      <div style={emptyStyles.pills}>
+      <div style={es.grid}>
+        {SUGGESTIONS.map((sg, i) => (
+          <button
+            key={i}
+            style={{ ...es.card, ...(hov === i ? es.cardHov : {}) }}
+            onMouseEnter={() => setHov(i)}
+            onMouseLeave={() => setHov(null)}
+            onClick={() => onSuggestion(sg.text)}
+          >
+            <span style={es.sgIcon}>{sg.icon}</span>
+            <span style={es.sgText}>{sg.text}</span>
+          </button>
+        ))}
+      </div>
+      <div style={es.legend}>
         {[
-          'Explain transformer attention',
-          'Write a Go HTTP server',
-          'Design a Redis cache layer',
-          'What is token optimization?',
-        ].map(s => (
-          <button key={s} style={emptyStyles.pill}>{s}</button>
+          ['var(--green)',     'Semantic cache'],
+          ['var(--cyan)',      'Prompt pruning'],
+          ['var(--indigo-2)',  'Smart routing'],
+          ['var(--amber)',     'Loop detection'],
+        ].map(([c, l]) => (
+          <div key={l} style={es.item}>
+            <div style={{ ...es.dot, background: c }} />
+            <span style={es.lbl}>{l}</span>
+          </div>
         ))}
       </div>
     </div>
@@ -196,191 +433,153 @@ function EmptyState() {
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const styles = {
-  root: {
-    display: 'flex',
-    height: '100vh',
-    background: 'var(--bg-base)',
-    overflow: 'hidden',
-  },
 
-  // sidebar
-  sidebar: {
-    width: 260,
-    flexShrink: 0,
-    background: 'var(--bg-card)',
-    borderRight: '1px solid var(--border)',
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  sidebarTop: {
-    padding: '16px 12px 8px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    borderBottom: '1px solid var(--border)',
-  },
-  logoRow: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 4px 8px' },
-  logoHex: { fontSize: 20, color: 'var(--indigo-2)' },
-  logoText: { fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' },
-  newChatBtn: {
-    display: 'flex', alignItems: 'center', gap: 8,
-    width: '100%', padding: '9px 12px',
-    background: 'var(--indigo)', color: '#fff',
-    border: 'none', borderRadius: 8,
-    fontSize: 13, fontWeight: 500, cursor: 'pointer',
-    fontFamily: 'inherit',
-    transition: 'opacity 0.15s',
-  },
+const s = {
+  root:    { display: 'flex', height: '100vh', background: 'var(--bg-base)', overflow: 'hidden' },
+  main:    { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 },
 
-  // conversation list
-  convoSection: {
-    flex: 1, overflow: 'auto', padding: '12px 8px',
-    display: 'flex', flexDirection: 'column', gap: 4,
-  },
-  convoLabel: {
-    fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
-    letterSpacing: '0.07em', color: 'var(--text-muted)',
-    padding: '4px 8px', display: 'block',
-  },
-  convoList: { display: 'flex', flexDirection: 'column', gap: 1 },
-  convoItem: {
-    display: 'flex', alignItems: 'center', gap: 8,
-    width: '100%', padding: '8px 10px',
-    background: 'transparent', border: 'none',
-    borderRadius: 6, cursor: 'pointer',
-    fontFamily: 'inherit', textAlign: 'left',
-    transition: 'background 0.1s',
-    color: 'var(--text-secondary)',
-  },
-  convoItemActive: {
-    background: 'var(--bg-hover)',
-    color: 'var(--text-primary)',
-  },
-  convoIcon: { fontSize: 13, flexShrink: 0 },
-  convoTitle: {
-    fontSize: 13, overflow: 'hidden',
-    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-  },
-
-  // sidebar bottom
-  sidebarBottom: {
-    padding: '8px 8px 12px',
-    borderTop: '1px solid var(--border)',
-    display: 'flex', flexDirection: 'column', gap: 6,
-  },
-  analyticsBtn: {
-    display: 'flex', alignItems: 'center', gap: 8,
-    width: '100%', padding: '9px 10px',
-    background: 'transparent',
-    border: '1px solid var(--border)', borderRadius: 7,
-    color: 'var(--text-secondary)', fontSize: 13,
-    cursor: 'pointer', fontFamily: 'inherit',
-    transition: 'background 0.15s, color 0.15s',
-  },
-  userRow: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    padding: '6px 4px',
-  },
-  avatar: {
-    width: 32, height: 32, borderRadius: '50%',
-    background: 'var(--indigo)', color: '#fff',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 14, fontWeight: 600, flexShrink: 0, overflow: 'hidden',
-  },
-  avatarImg: { width: '100%', height: '100%', objectFit: 'cover' },
-  userInfo: {
-    flex: 1, minWidth: 0,
-    display: 'flex', flexDirection: 'column', gap: 1,
-  },
-  userName:  { fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  userEmail: { fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  logoutBtn: {
-    background: 'none', border: 'none', cursor: 'pointer',
-    color: 'var(--text-muted)', fontSize: 16, padding: '4px',
-    borderRadius: 4, flexShrink: 0,
-    transition: 'color 0.15s',
-  },
-
-  // main
-  main: {
-    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    minWidth: 0,
-  },
   topBar: {
     height: 52, display: 'flex', alignItems: 'center', gap: 12,
-    padding: '0 20px', borderBottom: '1px solid var(--border)',
+    padding: '0 16px',
+    borderBottom: '1px solid var(--border)',
     background: 'var(--bg-card)', flexShrink: 0,
   },
-  toggleBtn: {
-    background: 'none', border: 'none', color: 'var(--text-muted)',
-    cursor: 'pointer', fontSize: 18, padding: '4px 6px', borderRadius: 4,
-    fontFamily: 'inherit',
+  menuBtn: {
+    padding: '6px 7px', background: 'transparent', border: 'none',
+    borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)',
+    display: 'flex', alignItems: 'center',
+    transition: 'background 0.15s',
   },
-  topBarTitle: { fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' },
-  topBarMeta:  { marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' },
+  topTitle: {
+    fontSize: 14, fontWeight: 600, color: 'var(--text-primary)',
+    flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  topRight:   { display: 'flex', alignItems: 'center', gap: 8 },
+  streamPill: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 11, color: 'var(--indigo-2)',
+    background: 'rgba(99,102,241,0.08)',
+    border: '1px solid rgba(99,102,241,0.2)',
+    padding: '3px 10px', borderRadius: 20,
+    animation: 'pulse 1.4s ease-in-out infinite',
+  },
+  streamDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--indigo-2)', flexShrink: 0 },
+  modelPill: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 12, color: 'var(--text-muted)',
+    background: 'var(--bg-card-2)',
+    border: '1px solid var(--border)',
+    padding: '4px 10px', borderRadius: 20,
+  },
+  modelDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', flexShrink: 0 },
 
-  // messages
-  messages: {
-    flex: 1, overflow: 'auto',
+  msgArea: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
+  msgList: {
     display: 'flex', flexDirection: 'column',
-    alignItems: 'center',
-    padding: '40px 20px',
+    maxWidth: 820, width: '100%',
+    margin: '0 auto', padding: '28px 24px', gap: 24,
   },
 
-  // input
   inputWrap: {
-    padding: '12px 20px 16px',
+    padding: '12px 20px 14px',
     borderTop: '1px solid var(--border)',
-    background: 'var(--bg-card)',
-    flexShrink: 0,
+    background: 'var(--bg-card)', flexShrink: 0,
   },
   inputBox: {
     display: 'flex', alignItems: 'flex-end', gap: 10,
     background: 'var(--bg-card-2)',
-    border: '1px solid var(--border-2)',
-    borderRadius: 12, padding: '10px 10px 10px 16px',
-    maxWidth: 760, margin: '0 auto',
+    border: '1px solid',
+    borderRadius: 14, padding: '10px 12px 10px 16px',
+    maxWidth: 820, margin: '0 auto',
+    transition: 'border-color 0.2s',
   },
   textarea: {
     flex: 1, background: 'none', border: 'none', outline: 'none',
-    color: 'var(--text-primary)', fontSize: 14, lineHeight: 1.6,
-    resize: 'none', fontFamily: 'inherit', minHeight: 24,
-    maxHeight: 180, overflowY: 'auto',
+    color: 'var(--text-primary)', fontSize: 14, lineHeight: 1.65,
+    resize: 'none', fontFamily: 'inherit',
+    minHeight: 24, maxHeight: 200, overflowY: 'auto',
   },
   sendBtn: {
-    width: 34, height: 34, borderRadius: 8,
-    background: 'var(--indigo)', border: 'none',
-    color: '#fff', fontSize: 18, fontWeight: 700,
-    cursor: 'pointer', flexShrink: 0,
+    width: 36, height: 36, borderRadius: 9,
+    border: 'none', color: '#fff',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    transition: 'opacity 0.15s',
+    flexShrink: 0, transition: 'background 0.15s',
   },
-  inputNote: {
+  hint: {
     fontSize: 11, color: 'var(--text-muted)',
-    textAlign: 'center', marginTop: 8,
-    maxWidth: 760, margin: '8px auto 0',
+    textAlign: 'center', maxWidth: 820,
+    margin: '8px auto 0',
+  },
+  kbd: {
+    fontSize: 10, fontFamily: 'var(--font-mono)',
+    background: 'var(--bg-card-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 4, padding: '1px 5px',
+    color: 'var(--text-muted)',
   },
 }
 
-const emptyStyles = {
+const es = {
   root: {
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', textAlign: 'center',
-    maxWidth: 520, margin: 'auto', gap: 16,
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    textAlign: 'center', maxWidth: 600, margin: 'auto',
+    padding: '52px 24px', gap: 20,
   },
-  icon: { fontSize: 48, color: 'var(--indigo-2)', lineHeight: 1 },
-  heading: { fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text-primary)' },
-  sub: { fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7 },
-  pills: { display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 4 },
-  pill: {
-    padding: '8px 14px',
+  iconWrap: {
+    width: 56, height: 56, borderRadius: '50%',
+    background: 'rgba(99,102,241,0.08)',
+    border: '1px solid rgba(99,102,241,0.18)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  icon:    { fontSize: 26, color: 'var(--indigo-2)' },
+  h:       { fontSize: 23, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.2 },
+  p:       { fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7, maxWidth: 420 },
+  grid:    { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, width: '100%' },
+  card: {
+    display: 'flex', alignItems: 'flex-start', gap: 10,
+    padding: '14px 16px',
     background: 'var(--bg-card)',
-    border: '1px solid var(--border)',
-    borderRadius: 20, fontSize: 13,
-    color: 'var(--text-secondary)', cursor: 'pointer',
-    fontFamily: 'inherit',
-    transition: 'background 0.15s, color 0.15s',
+    border: '1px solid var(--border)', borderRadius: 10,
+    cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+    transition: 'background 0.15s, border-color 0.15s, transform 0.1s',
   },
+  cardHov: { background: 'var(--bg-card-2)', borderColor: 'var(--border-2)', transform: 'translateY(-1px)' },
+  sgIcon:  { fontSize: 17, flexShrink: 0, marginTop: 1 },
+  sgText:  { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 },
+  legend:  { display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center' },
+  item:    { display: 'flex', alignItems: 'center', gap: 6 },
+  dot:     { width: 7, height: 7, borderRadius: '50%', flexShrink: 0 },
+  lbl:     { fontSize: 12, color: 'var(--text-muted)' },
+}
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+
+function MenuIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M2 4h12M2 8h12M2 12h12"
+        stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  )
+}
+
+function UpIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+      <path d="M7.5 11.5V3.5M3.5 7.5l4-4 4 4"
+        stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  )
+}
+
+function SpinnerIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"
+      style={{ animation: 'spin 0.8s linear infinite' }}>
+      <circle cx="7.5" cy="7.5" r="5.5"
+        stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeDasharray="26" strokeDashoffset="10"/>
+    </svg>
+  )
 }
